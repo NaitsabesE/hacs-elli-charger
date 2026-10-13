@@ -3,22 +3,35 @@
     "step": {
       "user": {
         "title": "Elli-Konto verbinden",
-        "description": "Der Login bei Elli erfordert inzwischen eine Sicherheitsabfrage, die nur in einem echten Browser funktioniert - Home Assistant kann sich daher nicht mehr direkt mit Passwort anmelden.\n\n1. Diesen Link öffnen und anmelden: [Bei Elli anmelden]({authorize_url})\n2. Der Browser versucht danach, einen Link zu öffnen, der mit `com.elli.ios.emsp://...` beginnt, und scheitert dabei (das ist normal). Diesen **kompletten** Link aus der Adressleiste bzw. Fehlerseite kopieren.\n3. Unten einfügen.",
+        "description": "Der Elli-Login erfordert eine Sicherheitsabfrage, die nur in einem echten Browser funktioniert. Du meldest dich dort an, Home Assistant übernimmt das Ergebnis.\n\n**Automatisch** braucht den kleinen Windows-Login-Helfer auf dem PC, an dem du dich anmeldest (einmalig): [Helfer herunterladen]({helper_url}), dann Rechtsklick → *Mit PowerShell ausführen*.\n\n**Manuell** funktioniert auf jedem Gerät: Du kopierst den Link `com.elli.ios.emsp://…` aus dem Browser und fügst ihn hier ein.",
+        "menu_options": {
+          "login_auto": "Automatisch anmelden (Windows-Login-Helfer)",
+          "login_manual": "Anmelden und Link manuell einfügen"
+        }
+      },
+      "login_auto": {
+        "title": "Bei Elli anmelden",
+        "description": "Ein neuer Browser-Tab mit dem Elli-Login öffnet sich. Melde dich an und löse die Sicherheitsabfrage.\n\nWenn der Browser fragt, ob der Link mit *Windows PowerShell* geöffnet werden soll, zulassen. Home Assistant schließt die Einrichtung dann automatisch ab.\n\nPassiert nichts? Prüfe, ob der [Login-Helfer]({helper_url}) auf diesem PC installiert ist, oder schließe den Dialog und wähle die manuelle Anmeldung."
+      },
+      "login_manual": {
+        "title": "Bei Elli anmelden (manuell)",
+        "description": "1. Diesen Link öffnen und anmelden: [Bei Elli anmelden]({authorize_url})\n2. Der Browser versucht danach, einen Link zu öffnen, der mit `com.elli.ios.emsp://…` beginnt, und scheitert (das ist normal). Diesen **kompletten** Link kopieren – z. B. F12 → *Netzwerk*, *Log beibehalten* anhaken, anmelden, nach `emsp` filtern und den *Location*-Header kopieren.\n3. Unten einfügen.",
         "data": {
           "callback_url": "Eingefügte Callback-URL"
         }
       },
       "reauth_confirm": {
         "title": "Elli Charger erneut anmelden",
-        "description": "Die Verbindung von Home Assistant zu Elli muss erneuert werden.\n\n1. Diesen Link öffnen und anmelden: [Bei Elli anmelden]({authorize_url})\n2. Den resultierenden Link `com.elli.ios.emsp://...` aus dem Browser kopieren (er lässt sich nicht öffnen - das ist normal).\n3. Unten einfügen.",
-        "data": {
-          "callback_url": "Eingefügte Callback-URL"
+        "description": "Die Verbindung von Home Assistant zu Elli muss erneuert werden. Wähle, wie du dich erneut anmelden möchtest.\n\nDie automatische Anmeldung braucht den [Windows-Login-Helfer]({helper_url}) auf dem PC, an dem du dich anmeldest.",
+        "menu_options": {
+          "login_auto": "Automatisch anmelden (Windows-Login-Helfer)",
+          "login_manual": "Anmelden und Link manuell einfügen"
         }
       }
     },
     "error": {
       "cannot_connect": "Verbindung zur Elli API fehlgeschlagen",
-      "invalid_callback": "Das sieht nicht nach einem gültigen Elli-Login-Callback-Link aus. Bitte die komplette URL nach der Anmeldung kopieren.",
+      "invalid_callback": "Das sieht nicht nach einem gültigen Elli-Login-Callback-Link aus, oder er ist abgelaufen. Bitte erneut anmelden und den kompletten Link verwenden.",
       "unknown": "Ein unerwarteter Fehler ist aufgetreten"
     },
     "abort": {

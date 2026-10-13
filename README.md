@@ -43,15 +43,35 @@ Home Assistant integration for Elli charging stations (wallboxes). Monitor your 
 
 ## Configuration
 
-Elli's login requires a security check that only works in a real browser, so Home Assistant cannot log in with your password directly. Instead:
+Elli's login requires a security check that only works in a real browser, and afterwards Elli only redirects to its own mobile app (`com.elli.ios.emsp://…`) – an address a desktop browser can't open. So you log in in your browser and hand the result to Home Assistant. There are two ways:
 
-1. Go to **Settings** → **Devices & Services**
-2. Click **+ Add Integration** and search for "Elli Charger"
-3. Open the **Log in to Elli** link shown in the dialog and log in with your Elli account
-4. Your browser will then try to open a link starting with `com.elli.ios.emsp://…` and fail – that's expected. Copy that **complete** link from the address bar / error page
-5. Paste it into the dialog and submit
+### Option A: automatic login (Windows, recommended)
 
-Only a revocable refresh token is stored, never your password. If it ever becomes invalid, Home Assistant shows a **Reauthenticate** prompt that walks you through the same steps.
+One-time setup on the PC you log in from:
+
+1. Go to **Settings** → **Devices & Services** → **+ Add Integration** → "Elli Charger".
+2. In the dialog, click **download helper**. Home Assistant serves `install-elli-login-helper.ps1` with its own address already filled in.
+3. Right-click the file → **Run with PowerShell**. It registers the `com.elli.ios.emsp://` address for your Windows user (no admin rights, nothing else is changed).
+
+Then, every time you (re-)connect:
+
+1. Choose **Log in automatically**. A browser tab with the Elli login opens.
+2. Log in and complete the security check.
+3. When the browser asks whether to open the link with *Windows PowerShell*, allow it (you can tick "always allow" for login.elli.eco).
+4. A confirmation page opens and the Home Assistant dialog finishes by itself.
+
+How it works: the helper forwards the callback to `/api/elli_charger/callback` on your Home Assistant. That endpoint only accepts a callback whose one-time OAuth `state` matches a login you just started in Home Assistant; everything else is rejected. The authorization code is additionally bound to the PKCE verifier that never leaves Home Assistant.
+
+Uninstall the helper: `powershell -ExecutionPolicy Bypass -File install-elli-login-helper.ps1 -Uninstall`. The script is also in this repository: [`custom_components/elli_charger/helper/install-elli-login-helper.ps1`](custom_components/elli_charger/helper/install-elli-login-helper.ps1) (it asks for your Home Assistant URL when run from there).
+
+### Option B: manual login (any device)
+
+1. Choose **Log in and paste the link manually** and open the **Log in to Elli** link.
+2. Log in. Your browser then tries to open a link starting with `com.elli.ios.emsp://…` and silently fails – that's expected.
+3. Get that **complete** link, e.g. in Chrome/Edge: press **F12** → **Network**, tick **Preserve log** *before* logging in, then filter for `emsp` and copy the **Location** response header of the last request.
+4. Paste it into the dialog and submit.
+
+Either way, only a revocable refresh token is stored, never your password. If it ever becomes invalid, Home Assistant shows a **Reauthenticate** prompt that offers the same two options.
 
 ### Options
 
@@ -87,19 +107,29 @@ The integration ships its own card, `custom:elli-history-card`. It is registered
 type: custom:elli-history-card
 ```
 
-**All options:**
+**Example** (costs at 0.38 €/kWh, RFID card shown with a name):
 
 ```yaml
 type: custom:elli-history-card
-entity: sensor.my_wallbox_energy_history   # optional, auto-detected if omitted
-title: Wallbox · Ladehistorie               # optional
-price_per_kwh: 0.32                         # optional, shows costs per year/month
-currency: "€"                               # optional, default "€"
-compare: true                               # previous year as ghost bars (default true)
-theme: dark                                 # dark (Grafana look, default) | ha (follow HA theme)
-card_names:                                 # optional: friendly names for RFID cards
-  "RFID 04A1B2C3": Markus
+title: Wallbox · Ladehistorie
+price_per_kwh: 0.38
+card_names:
+  "RFID xxxx": Basti
 ```
+
+Replace `xxxx` with your card's serial number exactly as it appears in the card (or in the `card` attribute of the *Last charges* sensors). Without `card_names` the card shows the raw label, e.g. `RFID 04A1B2C3`.
+
+**All options:**
+
+| Option | Default | Description |
+|---|---|---|
+| `entity` | auto-detected | The *Energy History* sensor, e.g. `sensor.my_wallbox_energy_history` |
+| `title` | `Wallbox · Ladehistorie` | Card title |
+| `price_per_kwh` | – | Price per kWh; adds cost figures to the stats, table and tooltips |
+| `currency` | `€` | Currency symbol for the costs |
+| `compare` | `true` | Show the previous year as ghost bars in the chart |
+| `theme` | `dark` | `dark` (Grafana look) or `ha` (follow your Home Assistant theme) |
+| `card_names` | – | Map of RFID card labels to friendly names |
 
 The card shows year totals, average per month, number of charges, year-over-year change, a monthly bar chart (hover for details per RFID card) and an expandable year/month table.
 

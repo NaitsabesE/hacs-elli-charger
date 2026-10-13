@@ -3,22 +3,35 @@
     "step": {
       "user": {
         "title": "Connect your Elli account",
-        "description": "Elli's login now requires solving a security check that only works in a real browser, so Home Assistant can't log in directly with a password.\n\n1. Open this link and log in: [Log in to Elli]({authorize_url})\n2. Your browser will then try to open a link starting with `com.elli.ios.emsp://...` and fail (that's expected). Copy that **complete** link from the address bar / error page.\n3. Paste it below.",
+        "description": "Elli's login requires a security check that only works in a real browser, so you log in there and Home Assistant receives the result.\n\n**Automatic** needs the small Windows login helper on the PC you log in from (one-time setup): [download helper]({helper_url}), then right-click it → *Run with PowerShell*.\n\n**Manual** works on any device: you copy the resulting `com.elli.ios.emsp://…` link from the browser and paste it here.",
+        "menu_options": {
+          "login_auto": "Log in automatically (Windows login helper)",
+          "login_manual": "Log in and paste the link manually"
+        }
+      },
+      "login_auto": {
+        "title": "Log in to Elli",
+        "description": "A new browser tab with the Elli login opens. Log in and complete the security check.\n\nWhen the browser asks whether to open the link with *Windows PowerShell*, allow it. Home Assistant then finishes the setup automatically.\n\nNothing happens? Make sure the [login helper]({helper_url}) is installed on this PC, or close this dialog and choose the manual login."
+      },
+      "login_manual": {
+        "title": "Log in to Elli (manual)",
+        "description": "1. Open this link and log in: [Log in to Elli]({authorize_url})\n2. Your browser will then try to open a link starting with `com.elli.ios.emsp://…` and fail (that's expected). Copy that **complete** link – e.g. press F12 → *Network*, tick *Preserve log*, log in, filter for `emsp` and copy the *Location* header.\n3. Paste it below.",
         "data": {
           "callback_url": "Pasted callback URL"
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate Elli Charger",
-        "description": "Home Assistant's connection to Elli needs to be renewed.\n\n1. Open this link and log in: [Log in to Elli]({authorize_url})\n2. Copy the resulting `com.elli.ios.emsp://...` link from your browser (it will fail to open - that's expected).\n3. Paste it below.",
-        "data": {
-          "callback_url": "Pasted callback URL"
+        "description": "Home Assistant's connection to Elli needs to be renewed. Choose how you want to log in again.\n\nAutomatic login needs the [Windows login helper]({helper_url}) on the PC you log in from.",
+        "menu_options": {
+          "login_auto": "Log in automatically (Windows login helper)",
+          "login_manual": "Log in and paste the link manually"
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to reach the Elli API",
-      "invalid_callback": "That doesn't look like a valid Elli login callback link. Make sure you copied the complete URL after logging in.",
+      "invalid_callback": "That doesn't look like a valid Elli login callback link, or it has expired. Please log in again and use the complete link.",
       "unknown": "Unexpected error occurred"
     },
     "abort": {

@@ -22,6 +22,7 @@ Large feature and robustness update. Existing entity IDs are kept (all `unique_i
 - Minimum `elli-client` version is now `1.5.0`; Home Assistant `2024.11` or newer is required.
 
 ### Added
+- **Automatic login without copy & paste (Windows).** The setup and re-authentication dialogs now offer *Log in automatically*: a small optional helper (downloadable from the dialog, with your Home Assistant URL pre-filled) registers the `com.elli.ios.emsp://` address on your PC and forwards Elli's login callback to Home Assistant, which then finishes the setup by itself. The callback endpoint only accepts the one-time `state` of a login that is currently waiting. The manual paste-the-link login remains available for all other devices.
 - **Session Power sensor** (W) – documented in the README since 1.0.0 but never actually created.
 - **Energy This Month / Energy Last Month / Energy This Year** sensors (kWh), calculated from Elli's charging history.
 - **Last 10 charges** – ten sensors (rank 1 = most recent). The entity name shows the start date/time (e.g. `01.10.26 18:57`), the state is the charged energy in kWh; card/RFID, start/end time and a full label are attributes.
@@ -31,6 +32,7 @@ Large feature and robustness update. Existing entity IDs are kept (all `unique_i
 - **Options flow** – polling interval configurable in the UI (1–60 min, default 5), applied without restart.
 - **Re-authentication flow** – if the refresh token is revoked or expires, Home Assistant shows a "Reauthenticate" prompt instead of failing silently.
 - German and English translations for the new setup, options, status states and service.
+- README: step-by-step login guide (automatic and manual, incl. how to get the callback link via the browser's developer tools) and a dashboard card example with all options.
 
 ### Changed
 - All sensors of a wallbox are grouped under **one device** (manufacturer, model, firmware version).
@@ -39,6 +41,7 @@ Large feature and robustness update. Existing entity IDs are kept (all `unique_i
 - Firmware info is polled only every 6th cycle and history statistics roughly once an hour, reducing API calls.
 
 ### Fixed
+- **Options dialog (polling interval) crashed on current Home Assistant versions** (`AttributeError: property 'config_entry' … has no setter`); the options flow no longer assigns `config_entry` itself.
 - **Session Energy** no longer drops to `unknown` between sessions or after a restart (last value is restored), which avoids gaps in the Energy Dashboard.
 - Rotated refresh tokens are persisted, so the integration doesn't break after a Home Assistant restart.
 - The API client is created in the executor, fixing Home Assistant's "blocking call inside the event loop" warning.

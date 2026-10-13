@@ -55,3 +55,12 @@ HISTORY_MAX_YEARS_BACK = 10
 # The dashboard card ships with the integration and is served from here.
 HISTORY_CARD_URL = "/elli_charger/elli-history-card.js"
 HISTORY_CARD_VERSION = "1.4.0"
+
+# --- Automatic login callback (Windows protocol-handler helper) ---
+# Elli only accepts its own mobile-app redirect URI, which a desktop browser
+# cannot open. A tiny, optional helper on the user's PC registers that URL
+# scheme and forwards the callback to this (unauthenticated, state-checked)
+# endpoint, which completes the waiting config flow automatically.
+CALLBACK_SCHEME = "com.elli.ios.emsp"
+CALLBACK_VIEW_URL = "/api/elli_charger/callback"
+HELPER_VIEW_URL = "/api/elli_charger/windows-login-helper.ps1"

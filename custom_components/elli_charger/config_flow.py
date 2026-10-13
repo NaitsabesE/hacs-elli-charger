@@ -1,7 +1,7 @@
 """Config flow for Elli Charger integration.
 
 Elli's Auth0-hosted login now requires an interactive Cloudflare Turnstile
-challenge (confirmed against elli-client 1.5.0, see IMPROVEMENTS.md). Direct
+challenge (confirmed against elli-client 1.5.0). Direct
 username/password login from server-side code - what this flow used to do -
 is therefore unreliable by design, not just flaky. `elli-client` >= 1.1.0
 instead exposes a browser-based Authorization Code + PKCE flow:
@@ -11,8 +11,9 @@ instead exposes a browser-based Authorization Code + PKCE flow:
    (that's what actually clears the Turnstile challenge).
 2. Elli redirects to a custom mobile-app URL scheme
    (`com.elli.ios.emsp://.../callback?code=...&state=...`) that a browser on
-   a PC can't open. The user copies that failed/undeliverable URL from the
-   address bar and pastes it back into this config flow.
+   a PC can't open. Either the optional Windows login helper forwards it to
+   Home Assistant automatically (see `auth_callback.py`), or the user copies
+   that URL out of the browser and pastes it back into this config flow.
 3. `client.exchange_callback(callback_url, authorization)` validates the
    `state` and exchanges the `code` for tokens.
 
@@ -43,12 +44,18 @@ from elli_client import (
     TokenResponse,
 )
 
+from .auth_callback import (
+    async_register_auth_views,
+    async_track_login,
+    async_untrack_login,
+)
 from .const import (
     CONF_ACCOUNT_LABEL,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
+    HELPER_VIEW_URL,
     MAX_SCAN_INTERVAL_MINUTES,
     MIN_SCAN_INTERVAL_MINUTES,
 )
@@ -112,7 +119,17 @@ def _account_label(tokens: TokenResponse) -> str:
 
 
 class ElliConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Elli Charger."""
+    """Handle a config flow for Elli Charger.
+
+    Two ways to finish the browser login (v1.5.0):
+
+    * **Automatic** (`login_auto`): an external step. Home Assistant opens the
+      Elli login; the optional Windows login helper hands the
+      `com.elli.ios.emsp://...` callback to `auth_callback.CallbackView`,
+      which resumes this flow - no copy & paste.
+    * **Manual** (`login_manual`): the original paste-the-link form, as a
+      fallback for devices without the helper.
+    """
 
     # Deliberately left at 1: the auth data shape changed (refresh token
     # instead of email/password), but that's handled at runtime in
@@ -126,6 +143,25 @@ class ElliConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         self._reauth_entry: config_entries.ConfigEntry | None = None
         self._authorization: AuthorizationSession | None = None
+        self._tracked_state: str | None = None
+        self._tokens: TokenResponse | None = None
+        self._login_error: str | None = None
+
+    # ------------------------------------------------------------- helpers
+    def _menu_placeholders(self) -> dict[str, str]:
+        return {"helper_url": HELPER_VIEW_URL}
+
+    async def _async_new_authorization(self) -> AuthorizationSession:
+        """Create a fresh (single-use) authorization session."""
+        self._untrack()
+        self._authorization = await self.hass.async_add_executor_job(
+            _create_authorization
+        )
+        return self._authorization
+
+    def _untrack(self) -> None:
+        async_untrack_login(self.hass, self._tracked_state)
+        self._tracked_state = None
 
     async def _async_new_authorization_form(
         self, step_id: str, errors: dict[str, str]
@@ -136,20 +172,19 @@ class ElliConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         an error) because Auth0's authorization codes are short-lived and
         single-use.
         """
-        self._authorization = await self.hass.async_add_executor_job(
-            _create_authorization
-        )
+        authorization = await self._async_new_authorization()
         return self.async_show_form(
             step_id=step_id,
             data_schema=STEP_CALLBACK_SCHEMA,
             description_placeholders={
-                "authorize_url": self._authorization.authorization_url
+                "authorize_url": authorization.authorization_url,
+                **self._menu_placeholders(),
             },
             errors=errors,
         )
 
     async def _async_exchange(self, callback_url: str) -> TokenResponse:
-        """Exchange the pasted callback URL, translating errors."""
+        """Exchange the pasted/forwarded callback URL, translating errors."""
         assert self._authorization is not None
         try:
             return await self.hass.async_add_executor_job(
@@ -162,45 +197,121 @@ class ElliConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.error("Elli token exchange failed: %s", err)
             raise CannotConnect from err
 
+    async def _async_try_exchange(self, callback_url: str) -> str | None:
+        """Exchange and remember the tokens; return an error key or None."""
+        try:
+            self._tokens = await self._async_exchange(callback_url)
+        except InvalidCallback:
+            return "invalid_callback"
+        except CannotConnect:
+            return "cannot_connect"
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Unexpected exception during Elli login")
+            return "unknown"
+        return None
+
+    async def _async_finish_login(self) -> FlowResult:
+        """Create the entry, or update it when re-authenticating."""
+        assert self._tokens is not None
+        tokens = self._tokens
+        label = _account_label(tokens)
+
+        if self._reauth_entry is not None:
+            self.hass.config_entries.async_update_entry(
+                self._reauth_entry,
+                data={
+                    **self._reauth_entry.data,
+                    CONF_REFRESH_TOKEN: tokens.refresh_token,
+                    CONF_ACCOUNT_LABEL: label,
+                },
+            )
+            await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
+            return self.async_abort(reason="reauth_successful")
+
+        await self.async_set_unique_id(label)
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=f"Elli ({label})",
+            data={
+                CONF_REFRESH_TOKEN: tokens.refresh_token,
+                CONF_ACCOUNT_LABEL: label,
+            },
+        )
+
+    @callback
+    def async_remove(self) -> None:
+        """Clean up a still-pending automatic login when the flow goes away."""
+        self._untrack()
+
+    # --------------------------------------------------------------- steps
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle the initial step: show the login link, then the paste-back form."""
+        """Let the user choose between automatic and manual login."""
+        async_register_auth_views(self.hass)
+        return self.async_show_menu(
+            step_id="user",
+            menu_options=["login_auto", "login_manual"],
+            description_placeholders=self._menu_placeholders(),
+        )
+
+    async def async_step_login_auto(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Open the Elli login and wait for the helper to forward the callback."""
+        if user_input is None:
+            async_register_auth_views(self.hass)
+            authorization = await self._async_new_authorization()
+            async_track_login(self.hass, authorization.state, self.flow_id)
+            self._tracked_state = authorization.state
+            return self.async_external_step(
+                step_id="login_auto",
+                url=authorization.authorization_url,
+                description_placeholders=self._menu_placeholders(),
+            )
+
+        # Called by auth_callback.CallbackView with the forwarded callback.
+        self._untrack()
+        self._login_error = await self._async_try_exchange(user_input["callback_url"])
+        if self._login_error:
+            return self.async_external_step_done(next_step_id="login_failed")
+        return self.async_external_step_done(next_step_id="login_done")
+
+    async def async_step_login_done(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Finish after a successful automatic login."""
+        return await self._async_finish_login()
+
+    async def async_step_login_failed(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Automatic login failed - fall back to the manual form with the error."""
+        error = self._login_error or "unknown"
+        self._login_error = None
+        return await self._async_new_authorization_form("login_manual", {"base": error})
+
+    async def async_step_login_manual(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Show the login link, then accept the pasted callback URL."""
         errors: dict[str, str] = {}
+        if user_input is not None and self._authorization is not None:
+            error = await self._async_try_exchange(user_input["callback_url"])
+            if error is None:
+                return await self._async_finish_login()
+            errors["base"] = error
 
-        if user_input is not None:
-            try:
-                tokens = await self._async_exchange(user_input["callback_url"])
-            except InvalidCallback:
-                errors["base"] = "invalid_callback"
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
-                errors["base"] = "unknown"
-            else:
-                label = _account_label(tokens)
-                await self.async_set_unique_id(label)
-                self._abort_if_unique_id_configured()
-
-                return self.async_create_entry(
-                    title=f"Elli ({label})",
-                    data={
-                        CONF_REFRESH_TOKEN: tokens.refresh_token,
-                        CONF_ACCOUNT_LABEL: label,
-                    },
-                )
-
-        return await self._async_new_authorization_form("user", errors)
+        return await self._async_new_authorization_form("login_manual", errors)
 
     async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
         """Handle re-authentication triggered by ConfigEntryAuthFailed.
 
-        This now happens when Elli/Auth0 rejects our *refresh token*
-        (revoked, expired, or the account requires a fresh interactive
-        login) - Home Assistant surfaces a "Reauthenticate" notification
-        that walks the user through the same browser+paste flow again,
-        rather than silently failing forever.
+        This happens when Elli/Auth0 rejects our *refresh token* (revoked,
+        expired, or the account requires a fresh interactive login) - Home
+        Assistant surfaces a "Reauthenticate" notification that walks the
+        user through the same login again, rather than silently failing
+        forever.
         """
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
@@ -210,36 +321,13 @@ class ElliConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Ask the user to redo the browser login for reauth."""
-        errors: dict[str, str] = {}
-        assert self._reauth_entry is not None
-
-        if user_input is not None:
-            try:
-                tokens = await self._async_exchange(user_input["callback_url"])
-            except InvalidCallback:
-                errors["base"] = "invalid_callback"
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception during reauth")
-                errors["base"] = "unknown"
-            else:
-                label = _account_label(tokens)
-                self.hass.config_entries.async_update_entry(
-                    self._reauth_entry,
-                    data={
-                        **self._reauth_entry.data,
-                        CONF_REFRESH_TOKEN: tokens.refresh_token,
-                        CONF_ACCOUNT_LABEL: label,
-                    },
-                )
-                await self.hass.config_entries.async_reload(
-                    self._reauth_entry.entry_id
-                )
-                return self.async_abort(reason="reauth_successful")
-
-        return await self._async_new_authorization_form("reauth_confirm", errors)
+        """Ask how to redo the browser login for reauth."""
+        async_register_auth_views(self.hass)
+        return self.async_show_menu(
+            step_id="reauth_confirm",
+            menu_options=["login_auto", "login_manual"],
+            description_placeholders=self._menu_placeholders(),
+        )
 
     @staticmethod
     @callback
@@ -247,15 +335,15 @@ class ElliConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> ElliOptionsFlow:
         """Create the options flow (Improvement #7: configurable polling)."""
-        return ElliOptionsFlow(config_entry)
+        return ElliOptionsFlow()
 
 
 class ElliOptionsFlow(config_entries.OptionsFlow):
-    """Handle Elli Charger options (currently: the polling interval)."""
+    """Handle Elli Charger options (currently: the polling interval).
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
+    `self.config_entry` is provided by Home Assistant (2024.11+); assigning it
+    manually raises an AttributeError on current versions.
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
