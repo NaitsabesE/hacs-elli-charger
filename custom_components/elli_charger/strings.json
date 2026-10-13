@@ -2,21 +2,75 @@
   "config": {
     "step": {
       "user": {
-        "title": "Elli Charger Setup",
-        "description": "Enter your Elli account credentials",
+        "title": "Connect your Elli account",
+        "description": "Elli's login now requires solving a security check that only works in a real browser, so Home Assistant can't log in directly with a password.\n\n1. Open this link and log in: [Log in to Elli]({authorize_url})\n2. Your browser will then try to open a link starting with `com.elli.ios.emsp://...` and fail (that's expected). Copy that **complete** link from the address bar / error page.\n3. Paste it below.",
         "data": {
-          "email": "Email",
-          "password": "Password"
+          "callback_url": "Pasted callback URL"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Elli Charger",
+        "description": "Home Assistant's connection to Elli needs to be renewed.\n\n1. Open this link and log in: [Log in to Elli]({authorize_url})\n2. Copy the resulting `com.elli.ios.emsp://...` link from your browser (it will fail to open - that's expected).\n3. Paste it below.",
+        "data": {
+          "callback_url": "Pasted callback URL"
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect to Elli API",
-      "invalid_auth": "Invalid email or password",
+      "cannot_connect": "Failed to reach the Elli API",
+      "invalid_callback": "That doesn't look like a valid Elli login callback link. Make sure you copied the complete URL after logging in.",
       "unknown": "Unexpected error occurred"
     },
     "abort": {
-      "already_configured": "This Elli account is already configured"
+      "already_configured": "This Elli account is already configured",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Elli Charger options",
+        "description": "Configure how often Home Assistant polls the Elli API.",
+        "data": {
+          "scan_interval": "Polling interval (minutes)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "wallbox_status": {
+        "name": "Status",
+        "state": {
+          "idle": "Idle",
+          "connected": "Connected",
+          "charging": "Charging"
+        }
+      }
+    }
+  },
+  "services": {
+    "send_monthly_report": {
+      "name": "Send monthly report",
+      "description": "Builds a PDF summarising the kWh charged per RFID card/authentication method for a given month, and optionally emails it via an existing notify service.",
+      "fields": {
+        "month": {
+          "name": "Month",
+          "description": "Month to report on, as YYYY-MM. Defaults to last month."
+        },
+        "notify_service": {
+          "name": "Notify service",
+          "description": "The notify service to send the PDF through, e.g. notify.smtp_family. Leave empty to only generate the PDF without sending it."
+        },
+        "target": {
+          "name": "Target",
+          "description": "Optional recipient/target forwarded to the notify service."
+        },
+        "config_entry_id": {
+          "name": "Elli account",
+          "description": "Restrict the report to one Elli account, if more than one is configured."
+        }
+      }
     }
   }
 }

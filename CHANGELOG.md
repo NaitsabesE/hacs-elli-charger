@@ -12,6 +12,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Large feature and robustness update. Existing entity IDs are kept (all `unique_id`s are unchanged).
+
+### ⚠️ Breaking changes
+- **New login method.** Elli's login now requires an interactive Cloudflare Turnstile check, so the old email/password login no longer works from Home Assistant. Setup now uses a browser-based login (Authorization Code + PKCE): open the link, log in, paste the resulting `com.elli.ios.emsp://…` link back into Home Assistant. Only a revocable refresh token is stored – never your password. Existing entries are asked to re-authenticate.
+- **Status sensor states are now lowercase enum values** (`idle`, `connected`, `charging`) and are translated in the UI. Automations that compare against `Idle` / `Connected` / `Charging` must be updated.
+- Minimum `elli-client` version is now `1.5.0`; Home Assistant `2024.11` or newer is required.
+
+### Added
+- **Session Power sensor** (W) – documented in the README since 1.0.0 but never actually created.
+- **Energy This Month / Energy Last Month / Energy This Year** sensors (kWh), calculated from Elli's charging history.
+- **Last 10 charges** – ten sensors (rank 1 = most recent). The entity name shows the start date/time (e.g. `01.10.26 18:57`), the state is the charged energy in kWh; card/RFID, start/end time and a full label are attributes.
+- **Energy History sensor** – all-time total in kWh with a year → month → RFID-card breakdown in its attributes (excluded from the recorder to keep the database small).
+- **Dashboard card `custom:elli-history-card`** – Grafana-style year/month overview with year-over-year comparison, per-card breakdown and optional cost calculation. It ships with the integration and is loaded automatically (no extra resource needed).
+- **Service `elli_charger.send_monthly_report`** – creates a PDF with kWh per RFID card for a month and can send it through any `notify` service (e.g. SMTP e-mail).
+- **Options flow** – polling interval configurable in the UI (1–60 min, default 5), applied without restart.
+- **Re-authentication flow** – if the refresh token is revoked or expires, Home Assistant shows a "Reauthenticate" prompt instead of failing silently.
+- German and English translations for the new setup, options, status states and service.
+
+### Changed
+- All sensors of a wallbox are grouped under **one device** (manufacturer, model, firmware version).
+- Entity names now use Home Assistant's `has_entity_name` convention (device name + short sensor name).
+- Access tokens are refreshed **proactively** before they expire; a 401 triggers exactly one refresh-and-retry.
+- Firmware info is polled only every 6th cycle and history statistics roughly once an hour, reducing API calls.
+
+### Fixed
+- **Session Energy** no longer drops to `unknown` between sessions or after a restart (last value is restored), which avoids gaps in the Energy Dashboard.
+- Rotated refresh tokens are persisted, so the integration doesn't break after a Home Assistant restart.
+- The API client is created in the executor, fixing Home Assistant's "blocking call inside the event loop" warning.
+- Transient token-endpoint errors now surface as a normal failed update instead of an unhandled exception.
+
 ## [1.0.0] - 2025-11-13
 
 ### Added

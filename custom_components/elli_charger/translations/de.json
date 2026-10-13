@@ -2,21 +2,75 @@
   "config": {
     "step": {
       "user": {
-        "title": "Elli Ladestation Einrichtung",
-        "description": "Geben Sie Ihre Elli-Zugangsdaten ein",
+        "title": "Elli-Konto verbinden",
+        "description": "Der Login bei Elli erfordert inzwischen eine Sicherheitsabfrage, die nur in einem echten Browser funktioniert - Home Assistant kann sich daher nicht mehr direkt mit Passwort anmelden.\n\n1. Diesen Link öffnen und anmelden: [Bei Elli anmelden]({authorize_url})\n2. Der Browser versucht danach, einen Link zu öffnen, der mit `com.elli.ios.emsp://...` beginnt, und scheitert dabei (das ist normal). Diesen **kompletten** Link aus der Adressleiste bzw. Fehlerseite kopieren.\n3. Unten einfügen.",
         "data": {
-          "email": "E-Mail",
-          "password": "Passwort"
+          "callback_url": "Eingefügte Callback-URL"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Elli Charger erneut anmelden",
+        "description": "Die Verbindung von Home Assistant zu Elli muss erneuert werden.\n\n1. Diesen Link öffnen und anmelden: [Bei Elli anmelden]({authorize_url})\n2. Den resultierenden Link `com.elli.ios.emsp://...` aus dem Browser kopieren (er lässt sich nicht öffnen - das ist normal).\n3. Unten einfügen.",
+        "data": {
+          "callback_url": "Eingefügte Callback-URL"
         }
       }
     },
     "error": {
       "cannot_connect": "Verbindung zur Elli API fehlgeschlagen",
-      "invalid_auth": "Ungültige E-Mail oder Passwort",
+      "invalid_callback": "Das sieht nicht nach einem gültigen Elli-Login-Callback-Link aus. Bitte die komplette URL nach der Anmeldung kopieren.",
       "unknown": "Ein unerwarteter Fehler ist aufgetreten"
     },
     "abort": {
-      "already_configured": "Dieses Elli-Konto ist bereits konfiguriert"
+      "already_configured": "Dieses Elli-Konto ist bereits konfiguriert",
+      "reauth_successful": "Erneute Anmeldung war erfolgreich"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Elli Charger Optionen",
+        "description": "Legen Sie fest, wie oft Home Assistant die Elli API abfragt.",
+        "data": {
+          "scan_interval": "Abfrageintervall (Minuten)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "wallbox_status": {
+        "name": "Status",
+        "state": {
+          "idle": "Bereit",
+          "connected": "Verbunden",
+          "charging": "Lädt"
+        }
+      }
+    }
+  },
+  "services": {
+    "send_monthly_report": {
+      "name": "Monatsbericht senden",
+      "description": "Erstellt ein PDF mit den geladenen kWh je Ladekarte/Authentifizierungsmethode für einen Monat und verschickt es optional über einen vorhandenen Notify-Dienst.",
+      "fields": {
+        "month": {
+          "name": "Monat",
+          "description": "Zu berichtender Monat im Format JJJJ-MM. Standard: letzter Monat."
+        },
+        "notify_service": {
+          "name": "Notify-Dienst",
+          "description": "Notify-Dienst, über den das PDF verschickt wird, z. B. notify.smtp_family. Leer lassen, um das PDF nur zu erstellen, ohne es zu senden."
+        },
+        "target": {
+          "name": "Ziel",
+          "description": "Optionaler Empfänger, der an den Notify-Dienst weitergegeben wird."
+        },
+        "config_entry_id": {
+          "name": "Elli-Konto",
+          "description": "Bericht auf ein Elli-Konto beschränken, falls mehrere konfiguriert sind."
+        }
+      }
     }
   }
 }

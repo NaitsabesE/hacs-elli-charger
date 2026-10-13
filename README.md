@@ -7,12 +7,15 @@ Home Assistant integration for Elli charging stations (wallboxes). Monitor your 
 
 ## Features
 
-- Real-time charging session monitoring
-- Energy consumption tracking (kWh)
-- Current charging power (Watts)
-- Station status and information
-- Automatic token refresh
-- Easy configuration through UI
+- Real-time charging session monitoring (status, energy, power)
+- Energy totals for this month, last month and this year
+- The last 10 charges, like the list in the Elli app
+- All-time charging history (year → month → RFID card)
+- Bundled dashboard card with a Grafana-style year/month overview
+- Monthly PDF report per RFID card, optionally sent by e-mail
+- All sensors grouped under one device per wallbox
+- Browser-based login (no password stored), automatic token refresh and re-authentication
+- Configurable polling interval
 
 ## Installation
 
@@ -40,48 +43,100 @@ Home Assistant integration for Elli charging stations (wallboxes). Monitor your 
 
 ## Configuration
 
+Elli's login requires a security check that only works in a real browser, so Home Assistant cannot log in with your password directly. Instead:
+
 1. Go to **Settings** → **Devices & Services**
-2. Click **+ Add Integration**
-3. Search for "Elli Charger"
-4. Enter your Elli account credentials:
-   - Email
-   - Password
+2. Click **+ Add Integration** and search for "Elli Charger"
+3. Open the **Log in to Elli** link shown in the dialog and log in with your Elli account
+4. Your browser will then try to open a link starting with `com.elli.ios.emsp://…` and fail – that's expected. Copy that **complete** link from the address bar / error page
+5. Paste it into the dialog and submit
+
+Only a revocable refresh token is stored, never your password. If it ever becomes invalid, Home Assistant shows a **Reauthenticate** prompt that walks you through the same steps.
+
+### Options
+
+Under **Settings** → **Devices & Services** → **Elli Charger** → **Configure** you can change the polling interval (1–60 minutes, default 5). The change applies immediately.
 
 ## Sensors
 
-The integration provides the following sensors:
+All sensors of a wallbox belong to one device named after the station. Entity IDs follow the device name, e.g. `sensor.<station>_session_energy`.
 
-### Station Sensor
-- **Name**: `Elli [Station Name]`
-- **State**: Connected/Idle
-- **Attributes**:
-  - Station ID
-  - Name
-  - Serial Number
-  - Model
-  - Firmware Version
+| Sensor | Unit | Description |
+|---|---|---|
+| Status | – | `idle` / `connected` / `charging` (translated in the UI). Attributes: station ID, name, serial number, model, firmware version |
+| Last Session | – | Charging state of the current/last session. Attributes: energy, power, RFID card, authentication method, start/end time, … |
+| Session Energy | kWh | Energy of the current/last session; keeps its value between sessions (Energy Dashboard ready) |
+| Session Power | W | Current charging power, `0` when not charging |
+| Energy This Month | kWh | Charged so far this calendar month |
+| Energy Last Month | kWh | Charged in the previous calendar month |
+| Energy This Year | kWh | Charged so far this calendar year |
+| Energy History | kWh | All-time total; attribute `years` holds the year → month → card breakdown used by the dashboard card |
+| Last charges 1–10 | kWh | One sensor per recent charge (1 = most recent). Name = start date/time, state = energy. Attributes: card, start/end time, label |
 
-### Current Session Energy
-- **Name**: `Elli Current Session Energy`
-- **Unit**: kWh
-- **Device Class**: Energy
-- **Attributes**:
-  - Session ID
-  - Station ID
-  - Start Time
-  - End Time (if completed)
-  - Status
+The month/year, history and last-charges sensors are calculated from Elli's charging history and refreshed about once an hour, so they may take a few minutes to fill after a restart.
 
-### Current Session Power
-- **Name**: `Elli Current Session Power`
-- **Unit**: W
-- **Device Class**: Power
-- **Attributes**:
-  - Session ID
-  - Station ID
-  - Status
+## Dashboard card
+
+The integration ships its own card, `custom:elli-history-card`. It is registered automatically – you do **not** need to add a resource in HACS or under *Dashboards → Resources*.
+
+**Add it via the UI:** open a dashboard → **Edit** → **Add card** → search for **"Elli Ladehistorie"** (or choose *Manual* and paste the YAML below).
+
+**Minimal configuration** (the Energy History sensor is detected automatically):
+
+```yaml
+type: custom:elli-history-card
+```
+
+**All options:**
+
+```yaml
+type: custom:elli-history-card
+entity: sensor.my_wallbox_energy_history   # optional, auto-detected if omitted
+title: Wallbox · Ladehistorie               # optional
+price_per_kwh: 0.32                         # optional, shows costs per year/month
+currency: "€"                               # optional, default "€"
+compare: true                               # previous year as ghost bars (default true)
+theme: dark                                 # dark (Grafana look, default) | ha (follow HA theme)
+card_names:                                 # optional: friendly names for RFID cards
+  "RFID 04A1B2C3": Markus
+```
+
+The card shows year totals, average per month, number of charges, year-over-year change, a monthly bar chart (hover for details per RFID card) and an expandable year/month table.
+
+> If the card doesn't appear right after updating, reload the browser (Ctrl+F5) once. On a fresh install the history is loaded a few minutes after the first start.
+
+## Monthly report (PDF)
+
+The service `elli_charger.send_monthly_report` creates a PDF with the kWh charged per RFID card for one month and stores it in `/config/www/elli_charger/`. Optionally it sends the PDF through a `notify` service (the SMTP notify platform attaches it to the e-mail).
+
+```yaml
+action: elli_charger.send_monthly_report
+data:
+  month: "2026-09"                 # optional, defaults to last month
+  notify_service: notify.email_me  # optional, leave empty to only create the PDF
+  target: "you@example.com"        # optional, forwarded to the notify service
+```
+
+Example automation – send last month's report on the 1st of every month:
+
+```yaml
+automation:
+  - alias: "Elli monthly report"
+    triggers:
+      - trigger: time
+        at: "08:00:00"
+    conditions:
+      - condition: template
+        value_template: "{{ now().day == 1 }}"
+    actions:
+      - action: elli_charger.send_monthly_report
+        data:
+          notify_service: notify.email_me
+```
 
 ## Usage Examples
+
+Replace `my_wallbox` with the entity ID prefix of your wallbox.
 
 ### Automation: Notify when charging complete
 
@@ -90,18 +145,18 @@ automation:
   - alias: "Notify when EV charging complete"
     trigger:
       - platform: numeric_state
-        entity_id: sensor.elli_current_session_power
+        entity_id: sensor.my_wallbox_session_power
         below: 100
         for:
           minutes: 5
     condition:
       - condition: numeric_state
-        entity_id: sensor.elli_current_session_energy
+        entity_id: sensor.my_wallbox_session_energy
         above: 5
     action:
       - service: notify.mobile_app
         data:
-          message: "EV charging complete! {{ states('sensor.elli_current_session_energy') }} kWh charged"
+          message: "EV charging complete! {{ states('sensor.my_wallbox_session_energy') }} kWh charged"
 ```
 
 ### Energy Dashboard
@@ -110,7 +165,7 @@ Add the energy sensor to your Home Assistant Energy Dashboard:
 
 1. Go to **Settings** → **Dashboards** → **Energy**
 2. Under "Electricity grid" → "Add consumption"
-3. Select `sensor.elli_current_session_energy`
+3. Select the **Session Energy** sensor of your wallbox (e.g. `sensor.my_wallbox_session_energy`)
 
 ## API Client
 

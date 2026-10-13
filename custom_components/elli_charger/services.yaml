@@ -1,0 +1,36 @@
+send_monthly_report:
+  name: Send monthly report
+  description: >-
+    Builds a PDF summarising the kWh charged per RFID card/authentication
+    method for a given month, and optionally emails it via an existing
+    notify service.
+  fields:
+    month:
+      name: Month
+      description: "Month to report on, as YYYY-MM. Defaults to last month."
+      example: "2026-08"
+      selector:
+        text:
+    notify_service:
+      name: Notify service
+      description: >-
+        The notify service to send the PDF through, e.g. notify.smtp_family.
+        Leave empty to only generate the PDF without sending it.
+      example: "notify.notify"
+      default: "notify.notify"
+      selector:
+        text:
+    target:
+      name: Target
+      description: Optional recipient/target forwarded to the notify service.
+      example: "you@example.com"
+      selector:
+        text:
+    config_entry_id:
+      name: Elli account
+      description: >-
+        Restrict the report to one Elli account, if more than one is
+        configured. Leave empty to include all accounts.
+      selector:
+        config_entry:
+          integration: elli_charger
