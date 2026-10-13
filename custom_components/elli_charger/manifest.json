@@ -4,6 +4,7 @@
   "codeowners": ["@marcszy91"],
   "config_flow": true,
   "dependencies": ["http", "frontend"],
+  "after_dependencies": ["recorder"],
   "documentation": "https://github.com/marcszy91/hacs-elli-charger",
   "integration_type": "hub",
   "iot_class": "cloud_polling",

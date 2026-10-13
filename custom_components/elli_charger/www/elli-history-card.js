@@ -17,9 +17,15 @@
  *   theme: dark                         # dark (Grafana) | ha (follow HA theme)
  *   card_names:                         # optional: rename RFID cards
  *     "RFID 04A1B2C3": Markus
+ *   show_live: true                     # live header while a car is plugged in
+ *   show_recent: true                   # table of the last charges
+ *   recent_count: 10                    # how many of them (max. 10)
+ *   show_projection: true               # year-end projection for the current year
+ *   show_solar: true                    # solar share (needs a PV sensor in the
+ *                                       # integration's options)
  */
 
-const CARD_VERSION = "1.4.0";
+const CARD_VERSION = "1.6.0";
 const MONTHS = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
 const MONTHS_LONG = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
 
@@ -27,6 +33,18 @@ const fmt = (v, d = 1) =>
   Number(v || 0).toLocaleString("de-DE", { minimumFractionDigits: d, maximumFractionDigits: d });
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const pad2 = (n) => String(n).padStart(2, "0");
+function fmtDur(minutes) {
+  const m = Math.max(0, Math.round(minutes || 0));
+  return `${Math.floor(m / 60)}:${pad2(m % 60)} h`;
+}
+function fmtDateTime(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "–";
+  return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${String(d.getFullYear()).slice(2)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+const pct = (part, whole) => (whole > 0 ? Math.min(100, (part / whole) * 100) : 0);
 
 function niceMax(v) {
   if (v <= 0) return 1;
@@ -78,8 +96,9 @@ const STYLE = `
   .stat .d { font-size: 11px; margin-top: 2px; color: var(--g-muted); }
   .up { color: var(--g-red); } .down { color: var(--g-green); }
   .section { padding: 8px 14px 4px; font-size: 12px; color: var(--g-muted); display: flex;
-    justify-content: space-between; align-items: center; }
-  .legend { display: flex; gap: 12px; }
+    justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
+  .legend { display: flex; gap: 4px 12px; flex-wrap: wrap; }
+  .legend span { white-space: nowrap; }
   .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px;
     margin-right: 5px; vertical-align: -1px; background: var(--g-green); }
   .legend span.prev::before { background: var(--g-blue); opacity: .45; }
@@ -117,6 +136,18 @@ const STYLE = `
   .cards { color: var(--g-muted); font-size: 11px; }
   .spark { display: block; }
   .spark rect { fill: var(--g-green); }
+  .live { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 14px 0;
+    padding: 9px 12px; border-radius: 4px; border: 1px solid var(--g-border); background: var(--g-bg2); font-size: 13px; }
+  .live.on { border-color: var(--g-green); box-shadow: inset 3px 0 0 var(--g-green); }
+  .live .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--g-blue); flex: none; }
+  .live.on .pulse { background: var(--g-green); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(115,191,105,.6); } 50% { box-shadow: 0 0 0 6px rgba(115,191,105,0); } }
+  .live .ls { font-weight: 500; }
+  .live .lp { color: var(--g-muted); }
+  .live .lp b { color: var(--g-text); font-weight: 500; }
+  .sun { color: var(--g-yellow); }
+  .legend span.sol::before { background: var(--g-yellow); }
+  .proj { color: var(--g-muted); }
   .empty { padding: 24px 16px; color: var(--g-muted); font-size: 13px; text-align: center; }
   .foot { padding: 0 14px 10px; font-size: 10px; color: var(--g-muted); text-align: right; }
   @media (max-width: 480px) { .hide-s { display: none; } .stat .v { font-size: 18px; } }
@@ -144,6 +175,84 @@ class ElliHistoryCard extends HTMLElement {
       this._sig = sig;
       this._render();
     }
+    this._syncTimer();
+  }
+
+  connectedCallback() {
+    this._syncTimer();
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._timer);
+    this._timer = null;
+  }
+
+  // Keep the live header's "since" duration ticking while a car is plugged in.
+  _syncTimer() {
+    const lv = this._stateObj()?.attributes?.live;
+    const active = this.isConnected && lv && lv.status && lv.status !== "idle" && this._config?.show_live !== false;
+    if (active && !this._timer) {
+      this._timer = setInterval(() => this._render(), 60000);
+    } else if (!active && this._timer) {
+      clearInterval(this._timer);
+      this._timer = null;
+    }
+  }
+
+  _showSolar() {
+    return this._config.show_solar !== false;
+  }
+
+  _liveHtml(st) {
+    const lv = st.attributes.live;
+    if (this._config.show_live === false || !lv || !lv.status || lv.status === "idle") return "";
+    const charging = lv.status === "charging";
+    const parts = [];
+    if (charging) parts.push(`<b>${fmt((lv.power_w || 0) / 1000, 1)} kW</b>`);
+    if (lv.energy_kwh != null) parts.push(`<b>${fmt(lv.energy_kwh, 1)} kWh</b>`);
+    if (lv.start) parts.push(`seit ${fmtDur((Date.now() - Date.parse(lv.start)) / 60000)}`);
+    const cost = lv.energy_kwh != null ? this._cost(lv.energy_kwh) : null;
+    if (cost) parts.push(cost);
+    if (lv.card) parts.push(esc(this._cardName(lv.card)));
+    return `<div class="live ${charging ? "on" : ""}"><span class="pulse"></span>
+      <span class="ls">${charging ? "Lädt gerade" : "Auto verbunden"}</span><span class="lp">${parts.join(" · ")}</span></div>`;
+  }
+
+  // Linear year-end projection for the current year (from the first month
+  // with data in the wallbox's first year). Null if there's too little data.
+  _projection(sel, firstYear) {
+    const now = new Date();
+    if (this._config.show_projection === false || sel.year !== now.getFullYear()) return null;
+    let start = new Date(sel.year, 0, 1);
+    if (sel.year === firstYear) {
+      const idx = sel.months.findIndex((m) => m.kwh > 0);
+      if (idx > 0) start = new Date(sel.year, idx, 1);
+    }
+    const days = (now - start) / 864e5;
+    if (days < 14 || sel.kwh <= 0) return null;
+    const total = (new Date(sel.year + 1, 0, 1) - start) / 864e5;
+    return sel.kwh * (total / days);
+  }
+
+  _recentHtml(st) {
+    const list = st.attributes.recent_charges;
+    if (this._config.show_recent === false || !Array.isArray(list) || !list.length) return "";
+    const count = Math.max(1, Math.min(10, Number(this._config.recent_count) || 10));
+    const hasCost = Number(this._config.price_per_kwh) > 0;
+    const hasSolar = this._showSolar() && list.some((c) => c.solar_kwh != null);
+    let h = `<div class="section"><span>Letzte Ladungen</span></div><div class="tbl"><table><thead><tr>
+      <th>Start</th><th class="n">Dauer</th><th class="n">kWh</th><th class="n hide-s">Ø kW</th><th class="hide-s">Karte</th>
+      ${hasCost ? `<th class="n">Kosten</th>` : ""}${hasSolar ? `<th class="n">Sonne</th>` : ""}</tr></thead><tbody>`;
+    for (const c of list.slice(0, count)) {
+      h += `<tr><td>${fmtDateTime(c.start)}</td>
+        <td class="n">${c.minutes != null ? fmtDur(c.minutes) : "–"}</td>
+        <td class="n">${fmt(c.kwh, 1)}</td>
+        <td class="n hide-s">${c.avg_kw != null ? fmt(c.avg_kw, 1) : "–"}</td>
+        <td class="hide-s cards">${esc(this._cardName(c.card || ""))}</td>
+        ${hasCost ? `<td class="n">${this._cost(c.kwh)}</td>` : ""}
+        ${hasSolar ? `<td class="n sun">${c.solar_kwh != null ? `≤ ${fmt(pct(c.solar_kwh, c.kwh), 0)} %` : "–"}</td>` : ""}</tr>`;
+    }
+    return h + "</tbody></table></div>";
   }
 
   getCardSize() {
@@ -236,6 +345,9 @@ class ElliHistoryCard extends HTMLElement {
            vs. ${prev.year}${isCurrent ? ` (bis ${MONTHS[elapsed - 1]})` : ""}</div>`;
 
     const costYear = this._cost(sel.kwh);
+    const proj = this._projection(sel, firstYear);
+    const projCost = proj != null ? this._cost(proj) : null;
+    const hasSolar = this._showSolar() && sel.solar_kwh != null;
     const stats = `
       <div class="stats">
         <div class="stat"><div class="l">${sel.year}${isCurrent ? " bisher" : ""}</div>
@@ -246,6 +358,12 @@ class ElliHistoryCard extends HTMLElement {
           <div class="v">${sel.charges}</div><div class="d">Ø ${fmt(sel.charges ? sel.kwh / sel.charges : 0, 1)} kWh / Ladung</div></div>
         ${costYear ? `<div class="stat"><div class="l">Kosten ${sel.year}</div><div class="v">${costYear}</div>
           <div class="d">@ ${fmt(this._config.price_per_kwh, 2)} ${esc(this._config.currency)}/kWh</div></div>` : ""}
+        ${proj != null ? `<div class="stat"><div class="l">Hochrechnung ${sel.year}</div>
+          <div class="v proj">~${fmt(proj, 0)}<small>kWh</small></div>
+          <div class="d">${projCost ? `≈ ${projCost} · ` : ""}bei gleichem Tempo</div></div>` : ""}
+        ${hasSolar ? `<div class="stat"><div class="l">Sonnenanteil ${sel.year}</div>
+          <div class="v sun">≤ ${fmt(pct(sel.solar_kwh, sel.kwh), 0)}<small>%</small></div>
+          <div class="d">bis zu ${fmt(sel.solar_kwh, 0)} kWh aus PV (Schätzung)</div></div>` : ""}
         <div class="stat"><div class="l">Gesamt seit ${firstYear}</div>
           <div class="v">${fmt(total, 0)}<small>kWh</small></div><div class="d">${st.attributes.charges ?? ""} Ladungen</div></div>
       </div>`;
@@ -253,19 +371,22 @@ class ElliHistoryCard extends HTMLElement {
     const compare = this._config.compare !== false && prev;
     const section = `
       <div class="section"><span>Energie pro Monat · ${sel.year}</span>
-        <span class="legend"><span>${sel.year}</span>${compare ? `<span class="prev">${prev.year}</span>` : ""}</span></div>`;
+        <span class="legend"><span>${sel.year}</span>${hasSolar ? `<span class="sol">davon Sonne (≤)</span>` : ""}${compare ? `<span class="prev">${prev.year}</span>` : ""}</span></div>`;
 
     this.shadowRoot.innerHTML = `${STYLE}<ha-card>
       ${head(chips)}
+      ${this._liveHtml(st)}
       ${stats}
       ${section}
-      <div class="chart">${this._chart(sel, compare ? prev : null, isCurrent ? elapsed : 12)}<div class="tip"></div></div>
+      <div class="chart">${this._chart(sel, compare ? prev : null, isCurrent ? elapsed : 12, hasSolar)}<div class="tip"></div></div>
+      ${this._recentHtml(st)}
+      <div class="section"><span>Jahre &amp; Monate</span></div>
       <div class="tbl">${this._table(years, now)}</div>
       <div class="foot">Elli Charger · v${CARD_VERSION}</div>
     </ha-card>`;
   }
 
-  _chart(sel, prev, elapsed) {
+  _chart(sel, prev, elapsed, hasSolar = false) {
     const W = 640, H = 240, pL = 42, pR = 8, pT = 18, pB = 24;
     const cw = W - pL - pR, ch = H - pT - pB;
     const vals = sel.months.map((m) => m.kwh);
@@ -297,8 +418,12 @@ class ElliHistoryCard extends HTMLElement {
       }
       if (!future && vals[i] > 0) {
         const xc = prev ? x0 + slot * 0.13 + bw + slot * 0.06 : x0 + slot * 0.21;
-        s += `<rect x="${xc}" y="${y(vals[i])}" width="${bw}" height="${pT + ch - y(vals[i])}" rx="2" fill="url(#gGreen)" stroke="#73bf69"/>
-          <text class="val" x="${xc + bw / 2}" y="${y(vals[i]) - 4}" text-anchor="middle">${fmt(vals[i], vals[i] >= 100 ? 0 : 1)}</text>`;
+        s += `<rect x="${xc}" y="${y(vals[i])}" width="${bw}" height="${pT + ch - y(vals[i])}" rx="2" fill="url(#gGreen)" stroke="#73bf69"/>`;
+        const sol = hasSolar ? Math.min(sel.months[i].solar_kwh || 0, vals[i]) : 0;
+        if (sol > 0) {
+          s += `<rect x="${xc}" y="${y(sol)}" width="${bw}" height="${pT + ch - y(sol)}" rx="2" fill="#fade2a" fill-opacity=".8"/>`;
+        }
+        s += `<text class="val" x="${xc + bw / 2}" y="${y(vals[i]) - 4}" text-anchor="middle">${fmt(vals[i], vals[i] >= 100 ? 0 : 1)}</text>`;
       }
       s += `<text x="${x0 + slot / 2}" y="${H - 7}" text-anchor="middle" ${future ? 'opacity=".4"' : ""}>${MONTHS[i]}</text>
         <rect class="hit" data-i="${i}" x="${x0}" y="${pT}" width="${slot}" height="${ch}"/>`;
@@ -315,9 +440,12 @@ class ElliHistoryCard extends HTMLElement {
 
   _table(years, now) {
     const hasCost = Number(this._config.price_per_kwh) > 0;
+    const hasSolar = this._showSolar() && years.some((y) => y.solar_kwh != null);
+    const solCell = (o) =>
+      hasSolar ? `<td class="n sun hide-s">${o.solar_kwh != null && o.kwh > 0 ? `≤ ${fmt(pct(o.solar_kwh, o.kwh), 0)} %` : "–"}</td>` : "";
     const maxYear = Math.max(...years.map((y) => y.kwh), 1);
     let h = `<table><thead><tr><th>Jahr / Monat</th><th class="hide-s">Verlauf</th><th>Anteil</th>
-      <th class="n">kWh</th><th class="n hide-s">Ladungen</th>${hasCost ? `<th class="n">Kosten</th>` : ""}</tr></thead><tbody>`;
+      <th class="n">kWh</th><th class="n hide-s">Ladungen</th>${hasCost ? `<th class="n">Kosten</th>` : ""}${hasSolar ? `<th class="n hide-s">Sonne</th>` : ""}</tr></thead><tbody>`;
 
     const firstYear = years[years.length - 1].year;
     for (const yr of years) {
@@ -334,7 +462,7 @@ class ElliHistoryCard extends HTMLElement {
         <td class="hide-s">${spark}</td>
         <td><div class="gauge"><div style="width:${(yr.kwh / maxYear) * 100}%"></div></div></td>
         <td class="n">${fmt(yr.kwh, 1)}</td><td class="n hide-s">${yr.charges}</td>
-        ${hasCost ? `<td class="n">${this._cost(yr.kwh)}</td>` : ""}</tr>`;
+        ${hasCost ? `<td class="n">${this._cost(yr.kwh)}</td>` : ""}${solCell(yr)}</tr>`;
 
       if (open) {
         const isCur = yr.year === now.getFullYear();
@@ -349,7 +477,7 @@ class ElliHistoryCard extends HTMLElement {
             <td class="hide-s cards">${cards}</td>
             <td><div class="gauge"><div style="width:${(m.kwh / mMax) * 100}%"></div></div></td>
             <td class="n">${fmt(m.kwh, 1)}</td><td class="n hide-s">${m.charges}</td>
-            ${hasCost ? `<td class="n">${this._cost(m.kwh)}</td>` : ""}</tr>`;
+            ${hasCost ? `<td class="n">${this._cost(m.kwh)}</td>` : ""}${solCell(m)}</tr>`;
         }
       }
     }
@@ -395,6 +523,9 @@ class ElliHistoryCard extends HTMLElement {
         <div class="r"><span>Energie</span><span>${fmt(m.kwh, 2)} kWh</span></div>
         <div class="r"><span>Ladungen</span><span>${m.charges}</span></div>`;
       if (cost) html += `<div class="r"><span>Kosten</span><span>${cost}</span></div>`;
+      if (this._showSolar() && m.solar_kwh != null && m.kwh > 0) {
+        html += `<div class="r"><span>davon Sonne ≤</span><span class="sun">${fmt(m.solar_kwh, 1)} kWh (${fmt(pct(m.solar_kwh, m.kwh), 0)} %)</span></div>`;
+      }
       if (prev) {
         const pk = prev.months[i].kwh;
         html += `<div class="r"><span>${prev.year}</span><span>${fmt(pk, 2)} kWh</span></div>`;

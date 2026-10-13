@@ -53,6 +53,7 @@ from .const import (
     CONF_ACCOUNT_LABEL,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    CONF_SOLAR_ENTITY,
     DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
     HELPER_VIEW_URL,
@@ -355,6 +356,7 @@ class ElliOptionsFlow(config_entries.OptionsFlow):
         current = self.config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_MINUTES
         )
+        current_solar = self.config_entry.options.get(CONF_SOLAR_ENTITY)
 
         return self.async_show_form(
             step_id="init",
@@ -369,6 +371,16 @@ class ElliOptionsFlow(config_entries.OptionsFlow):
                             step=1,
                             mode=selector.NumberSelectorMode.BOX,
                             unit_of_measurement="min",
+                        )
+                    ),
+                    # v1.6.0: optional PV energy sensor for the solar-share
+                    # estimate (suggested_value so it can be cleared again).
+                    vol.Optional(
+                        CONF_SOLAR_ENTITY,
+                        description={"suggested_value": current_solar},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="energy"
                         )
                     ),
                 }

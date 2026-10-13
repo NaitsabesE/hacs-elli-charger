@@ -11,7 +11,7 @@ Home Assistant integration for Elli charging stations (wallboxes). Monitor your 
 - Energy totals for this month, last month and this year
 - The last 10 charges, like the list in the Elli app
 - All-time charging history (year → month → RFID card)
-- Bundled dashboard card with a Grafana-style year/month overview
+- Bundled dashboard card with a Grafana-style year/month overview, live charging header, recent charges, year projection and optional solar share
 - Monthly PDF report per RFID card, optionally sent by e-mail
 - All sensors grouped under one device per wallbox
 - Browser-based login (no password stored), automatic token refresh and re-authentication
@@ -75,7 +75,10 @@ Either way, only a revocable refresh token is stored, never your password. If it
 
 ### Options
 
-Under **Settings** → **Devices & Services** → **Elli Charger** → **Configure** you can change the polling interval (1–60 minutes, default 5). The change applies immediately.
+Under **Settings** → **Devices & Services** → **Elli Charger** → **Configure** you can change:
+
+- **Polling interval** (1–60 minutes, default 5) – applies immediately.
+- **PV / solar energy sensor** (optional) – a cumulative energy sensor of your PV system (e.g. the *Solar production* sensor from the Energy Dashboard, device class `energy`). If set, the integration estimates how much of each charge could have come from solar, using Home Assistant's long-term statistics. The integration reloads when this changes.
 
 ## Sensors
 
@@ -90,7 +93,7 @@ All sensors of a wallbox belong to one device named after the station. Entity ID
 | Energy This Month | kWh | Charged so far this calendar month |
 | Energy Last Month | kWh | Charged in the previous calendar month |
 | Energy This Year | kWh | Charged so far this calendar year |
-| Energy History | kWh | All-time total; attribute `years` holds the year → month → card breakdown used by the dashboard card |
+| Energy History | kWh | All-time total; attributes `years` (year → month → card breakdown), `recent_charges` (last charges with duration and average power), `live` (current session) – used by the dashboard card |
 | Last charges 1–10 | kWh | One sensor per recent charge (1 = most recent). Name = start date/time, state = energy. Attributes: card, start/end time, label |
 
 The month/year, history and last-charges sensors are calculated from Elli's charging history and refreshed about once an hour, so they may take a few minutes to fill after a restart.
@@ -130,8 +133,15 @@ Replace `xxxx` with your card's serial number exactly as it appears in the card 
 | `compare` | `true` | Show the previous year as ghost bars in the chart |
 | `theme` | `dark` | `dark` (Grafana look) or `ha` (follow your Home Assistant theme) |
 | `card_names` | – | Map of RFID card labels to friendly names |
+| `show_live` | `true` | Live header while a car is connected/charging: status, power, kWh and duration of the current session |
+| `show_recent` | `true` | Table of the last charges (start, duration, kWh, Ø kW, card, cost, solar share) |
+| `recent_count` | `10` | Number of rows in the recent charges table (1–10) |
+| `show_projection` | `true` | Year-end projection (linear extrapolation, shown from day 14 of the year) |
+| `show_solar` | `true` | Solar share in stats, chart, tooltips and tables – only if a PV sensor is set in the integration options |
 
-The card shows year totals, average per month, number of charges, year-over-year change, a monthly bar chart (hover for details per RFID card) and an expandable year/month table.
+The card shows year totals, average per month, number of charges, year-over-year change, the projected year total, a monthly bar chart (hover for details per RFID card) and an expandable year/month table.
+
+**Solar share.** Once a PV sensor is configured (see [Options](#options)), the card adds a yellow overlay to the monthly bars and a "Sonne" column to the tables. The value is an **upper-bound estimate**: each charge is spread evenly over its duration and capped, hour by hour, at what the PV system produced. Household consumption and battery storage are not taken into account, so the real solar share can be lower. Periods without PV statistics show `–`.
 
 > If the card doesn't appear right after updating, reload the browser (Ctrl+F5) once. On a fresh install the history is loaded a few minutes after the first start.
 

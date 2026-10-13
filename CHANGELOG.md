@@ -28,6 +28,10 @@ Large feature and robustness update. Existing entity IDs are kept (all `unique_i
 - **Last 10 charges** – ten sensors (rank 1 = most recent). The entity name shows the start date/time (e.g. `01.10.26 18:57`), the state is the charged energy in kWh; card/RFID, start/end time and a full label are attributes.
 - **Energy History sensor** – all-time total in kWh with a year → month → RFID-card breakdown in its attributes (excluded from the recorder to keep the database small).
 - **Dashboard card `custom:elli-history-card`** – Grafana-style year/month overview with year-over-year comparison, per-card breakdown and optional cost calculation. It ships with the integration and is loaded automatically (no extra resource needed).
+- **Dashboard card: live header** – while a car is connected or charging, the card shows status, current power, energy and duration of the running session (updates every minute).
+- **Dashboard card: recent charges table** – start, duration, kWh, average kW, card, cost and solar share of the last charges (`show_recent`, `recent_count`).
+- **Dashboard card: year projection** – linear extrapolation of the current year's total, shown from day 14 (`show_projection`).
+- **Solar share (optional)** – pick a PV energy sensor in the integration options; the charge energy covered by PV is estimated from Home Assistant's long-term statistics (upper bound) and shown as overlay, tooltip, stat and table column in the card (`show_solar`). Energy History gains `recent_charges` and `live` attributes.
 - **Service `elli_charger.send_monthly_report`** – creates a PDF with kWh per RFID card for a month and can send it through any `notify` service (e.g. SMTP e-mail).
 - **Options flow** – polling interval configurable in the UI (1–60 min, default 5), applied without restart.
 - **Re-authentication flow** – if the refresh token is revoked or expires, Home Assistant shows a "Reauthenticate" prompt instead of failing silently.

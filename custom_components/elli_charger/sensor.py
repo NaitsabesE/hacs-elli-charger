@@ -64,6 +64,19 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
+def session_status(session) -> str:
+    """idle / connected / charging for the latest session of a station."""
+    if not session:
+        return "idle"
+    if session.charging_state and "charging" in session.charging_state.lower():
+        return "charging"
+    if session.momentary_charging_speed_watts and session.momentary_charging_speed_watts > 0:
+        return "charging"
+    if session.lifecycle_state == "active":
+        return "connected"
+    return "idle"
+
+
 class ElliStationEntity(CoordinatorEntity):
     """Common lookups + device grouping shared by all Elli sensors.
 
@@ -444,7 +457,7 @@ class ElliEnergyHistorySensor(ElliStationEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _unrecorded_attributes = frozenset({"years"})
+    _unrecorded_attributes = frozenset({"years", "recent_charges", "live"})
 
     def __init__(self, coordinator, station_id: str) -> None:
         """Initialize the sensor."""
@@ -481,11 +494,35 @@ class ElliEnergyHistorySensor(ElliStationEntity, SensorEntity):
         history = self._history()
         if history is None:
             return {}
-        return {
+        attrs: dict[str, Any] = {
             "years": history,
             "charges": sum(year["charges"] for year in history),
             "first_year": history[-1]["year"] if history else None,
+            # v1.6.0 - consumed by custom:elli-history-card
+            "live": self._live(),
+            "recent_charges": self.coordinator.recent_charges.get(self._station_id, []),
         }
+        if self.coordinator.solar_entity:
+            attrs["solar_entity"] = self.coordinator.solar_entity
+        return attrs
+
+    def _live(self) -> dict[str, Any]:
+        """Current session snapshot for the card's live header."""
+        session = self._get_latest_session()
+        status = session_status(session)
+        live: dict[str, Any] = {"status": status}
+        if session is None or status == "idle":
+            return live
+        live["power_w"] = session.momentary_charging_speed_watts or 0
+        if session.energy_consumption_wh is not None:
+            live["energy_kwh"] = round(session.energy_consumption_wh / 1000, 2)
+        if session.start_date_time:
+            live["start"] = session.start_date_time
+        if session.rfid_card_serial_number:
+            live["card"] = f"RFID {session.rfid_card_serial_number}"
+        elif session.authentication_method:
+            live["card"] = session.authentication_method
+        return live
 
 
 class ElliRecentChargeSensor(ElliStationEntity, SensorEntity):

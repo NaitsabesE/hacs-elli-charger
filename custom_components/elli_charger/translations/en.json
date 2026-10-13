@@ -43,9 +43,13 @@
     "step": {
       "init": {
         "title": "Elli Charger options",
-        "description": "Configure how often Home Assistant polls the Elli API.",
+        "description": "Configure how often Home Assistant polls the Elli API and, optionally, which PV energy sensor is used to estimate the solar share of each charge.",
         "data": {
-          "scan_interval": "Polling interval (minutes)"
+          "scan_interval": "Polling interval (minutes)",
+          "solar_entity": "PV production (energy sensor, optional)"
+        },
+        "data_description": {
+          "solar_entity": "Energy sensor of your PV system that counts produced energy (kWh, e.g. the solar yield sensor of your inverter or Anker Solix). Its hourly statistics are matched against each charge. The result is an upper-bound estimate: it assumes all PV energy during a charge went into the car."
         }
       }
     }

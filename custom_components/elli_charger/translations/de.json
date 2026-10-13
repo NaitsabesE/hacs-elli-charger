@@ -43,9 +43,13 @@
     "step": {
       "init": {
         "title": "Elli Charger Optionen",
-        "description": "Legen Sie fest, wie oft Home Assistant die Elli API abfragt.",
+        "description": "Legen Sie fest, wie oft Home Assistant die Elli API abfragt und optional, welcher PV-Energiesensor für die Schätzung des Solaranteils je Ladung verwendet wird.",
         "data": {
-          "scan_interval": "Abfrageintervall (Minuten)"
+          "scan_interval": "Abfrageintervall (Minuten)",
+          "solar_entity": "PV-Erzeugung (Energiesensor, optional)"
+        },
+        "data_description": {
+          "solar_entity": "Energiesensor deiner PV-Anlage, der die erzeugte Energie zählt (kWh, z. B. der Solarertrag deines Wechselrichters oder der Anker Solix). Seine stündliche Statistik wird mit jeder Ladung abgeglichen. Das Ergebnis ist eine Obergrenze: Es wird angenommen, dass der PV-Strom während einer Ladung komplett ins Auto ging."
         }
       }
     }

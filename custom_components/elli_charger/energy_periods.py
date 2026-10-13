@@ -86,12 +86,15 @@ def card_label(record) -> str:
     return UNKNOWN_CARD_LABEL
 
 
-def group_records_by_month(records) -> dict[str, dict]:
+def group_records_by_month(records, solar_fn=None) -> dict[str, dict]:
     """Aggregate records per local calendar month.
 
     Returns {"YYYY-MM": {"kwh": float, "charges": int, "cards": {label: kwh}}}.
     Records are de-duplicated by id; records without a parsable start time
     are skipped (they can't be assigned to a month).
+
+    With `solar_fn` (record -> estimated solar kWh or None) every month also
+    gets a "solar_kwh" total.
     """
     by_id = {getattr(r, "id", index): r for index, r in enumerate(records)}
     months: dict[str, dict] = {}
@@ -107,6 +110,10 @@ def group_records_by_month(records) -> dict[str, dict]:
         entry["charges"] += 1
         label = card_label(record)
         entry["cards"][label] = entry["cards"].get(label, 0.0) + kwh
+        if solar_fn is not None:
+            solar = solar_fn(record)
+            if solar is not None:
+                entry["solar_kwh"] = entry.get("solar_kwh", 0.0) + solar
     return months
 
 
@@ -133,6 +140,9 @@ def build_history(months: dict[str, dict]) -> list[dict]:
         mdata["charges"] += agg["charges"]
         ydata["kwh"] += agg["kwh"]
         ydata["charges"] += agg["charges"]
+        if "solar_kwh" in agg:
+            mdata["solar_kwh"] = mdata.get("solar_kwh", 0.0) + agg["solar_kwh"]
+            ydata["solar_kwh"] = ydata.get("solar_kwh", 0.0) + agg["solar_kwh"]
         for label, kwh in agg["cards"].items():
             mdata["cards"][label] = mdata["cards"].get(label, 0.0) + kwh
             ydata["cards"][label] = ydata["cards"].get(label, 0.0) + kwh
@@ -145,9 +155,13 @@ def build_history(months: dict[str, dict]) -> list[dict]:
         ydata = years[year]
         ydata["kwh"] = round(ydata["kwh"], 2)
         ydata["cards"] = _round_cards(ydata["cards"])
+        if "solar_kwh" in ydata:
+            ydata["solar_kwh"] = round(ydata["solar_kwh"], 2)
         for mdata in ydata["months"]:
             mdata["kwh"] = round(mdata["kwh"], 2)
             mdata["cards"] = _round_cards(mdata["cards"])
+            if "solar_kwh" in mdata:
+                mdata["solar_kwh"] = round(mdata["solar_kwh"], 2)
         result.append(ydata)
     return result
 
@@ -168,3 +182,94 @@ def most_recent_records(records, limit: int) -> list:
 
     ordered = sorted(by_id.values(), key=_sort_key, reverse=True)
     return ordered[:limit]
+
+
+# --------------------------------------------------------------------------
+# Solar share (v1.6.0)
+# --------------------------------------------------------------------------
+HOUR = 3600
+
+
+def record_window(record) -> tuple[float, float] | None:
+    """Return (start, stop) of a charge as UTC epoch seconds, or None."""
+    start = dt_util.parse_datetime(getattr(record, "start_date_time", "") or "")
+    stop = dt_util.parse_datetime(getattr(record, "stop_date_time", "") or "")
+    if start is None or stop is None:
+        return None
+    start_ts, stop_ts = start.timestamp(), stop.timestamp()
+    if stop_ts <= start_ts:
+        return None
+    return start_ts, stop_ts
+
+
+def estimate_solar_kwh(record, hourly_pv: dict[int, float]) -> float | None:
+    """Estimate how much of one charge could have been covered by solar.
+
+    `hourly_pv` maps the UTC epoch second of each hour's start to the PV
+    energy produced in that hour (kWh, from Home Assistant's long-term
+    statistics). The charge's energy is spread evenly over its duration and,
+    hour by hour, capped by the PV energy produced during the overlapping
+    part of that hour.
+
+    This is an UPPER BOUND: it assumes all PV energy during the charge went
+    into the car (the house's own consumption isn't known here). Returns
+    None if the record has no usable start/stop time, or if there are no PV
+    statistics at all for the charge's time span (e.g. before the PV system
+    or its sensor existed) - "unknown" rather than a misleading 0 %.
+    """
+    window = record_window(record)
+    if window is None:
+        return None
+    start_ts, stop_ts = window
+    total_kwh = (getattr(record, "total_energy_wh", 0) or 0) / 1000
+    if total_kwh <= 0:
+        return 0.0
+    duration = stop_ts - start_ts
+    solar = 0.0
+    covered = False
+    hour = int(start_ts // HOUR) * HOUR
+    while hour < stop_ts:
+        overlap = min(stop_ts, hour + HOUR) - max(start_ts, hour)
+        if overlap > 0 and hour in hourly_pv:
+            covered = True
+            charge_part = total_kwh * overlap / duration
+            pv_part = max(hourly_pv[hour], 0.0) * overlap / HOUR
+            solar += min(charge_part, pv_part)
+        hour += HOUR
+    if not covered:
+        return None
+    return min(solar, total_kwh)
+
+
+def hourly_from_statistics(rows) -> dict[int, float]:
+    """Turn recorder statistic rows (hourly, with "change") into {hour_ts: kWh}."""
+    hourly: dict[int, float] = {}
+    for row in rows or []:
+        start = row.get("start")
+        change = row.get("change")
+        if start is None or change is None:
+            continue
+        if isinstance(start, datetime):
+            start = start.timestamp()
+        hourly[int(start)] = float(change)
+    return hourly
+
+
+def recent_charge_summary(record, solar_kwh: float | None = None) -> dict:
+    """Compact, JSON-friendly summary of one charge for the dashboard card."""
+    kwh = round((getattr(record, "total_energy_wh", 0) or 0) / 1000, 2)
+    summary: dict = {
+        "start": getattr(record, "start_date_time", None),
+        "end": getattr(record, "stop_date_time", None),
+        "kwh": kwh,
+        "card": card_label(record),
+    }
+    window = record_window(record)
+    if window is not None:
+        minutes = (window[1] - window[0]) / 60
+        summary["minutes"] = round(minutes)
+        if minutes > 0:
+            summary["avg_kw"] = round(kwh / (minutes / 60), 2)
+    if solar_kwh is not None:
+        summary["solar_kwh"] = round(solar_kwh, 2)
+    return summary

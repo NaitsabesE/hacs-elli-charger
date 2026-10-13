@@ -15,6 +15,8 @@ CONF_ACCOUNT_LABEL = "account_label"
 
 # --- Polling configuration (Improvement #7: configurable scan interval) ---
 CONF_SCAN_INTERVAL = "scan_interval"
+# Optional PV energy sensor used to estimate the solar share of each charge.
+CONF_SOLAR_ENTITY = "solar_entity"
 DEFAULT_SCAN_INTERVAL_MINUTES = 5
 MIN_SCAN_INTERVAL_MINUTES = 1
 MAX_SCAN_INTERVAL_MINUTES = 60
@@ -54,7 +56,7 @@ REPORT_RECORDS_PAGE_SIZE = 100
 HISTORY_MAX_YEARS_BACK = 10
 # The dashboard card ships with the integration and is served from here.
 HISTORY_CARD_URL = "/elli_charger/elli-history-card.js"
-HISTORY_CARD_VERSION = "1.4.0"
+HISTORY_CARD_VERSION = "1.6.0"
 
 # --- Automatic login callback (Windows protocol-handler helper) ---
 # Elli only accepts its own mobile-app redirect URI, which a desktop browser

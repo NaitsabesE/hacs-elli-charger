@@ -20,6 +20,7 @@ from elli_client import ElliAPIClient, ElliClientError, ReauthenticationRequired
 from .const import (
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
+    CONF_SOLAR_ENTITY,
     DATA_SESSIONS,
     DATA_STATIONS,
     DEFAULT_SCAN_INTERVAL_MINUTES,
@@ -33,6 +34,9 @@ from .const import (
 )
 from .energy_periods import (
     build_history,
+    estimate_solar_kwh,
+    hourly_from_statistics,
+    recent_charge_summary,
     fetch_station_records,
     group_records_by_month,
     local_bounds_to_utc,
@@ -143,6 +147,11 @@ async def _async_register_history_card(hass: HomeAssistant) -> None:
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update (e.g. scan interval changed in the UI)."""
     coordinator: ElliDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    if (entry.options.get(CONF_SOLAR_ENTITY) or None) != coordinator.solar_entity:
+        # A different PV sensor changes all (cached) history figures - the
+        # simplest correct thing is a full reload of the entry.
+        hass.config_entries.async_schedule_reload(entry.entry_id)
+        return
     coordinator.update_interval = timedelta(
         minutes=entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL_MINUTES)
     )
@@ -217,6 +226,10 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
         # as compact per-month aggregates; only the current year is
         # re-read on every stats cycle (it already is, for year_kwh).
         self.energy_history: dict[str, list[dict]] = {}
+        # v1.6.0: last charges as compact dicts (for the dashboard card) and
+        # the optional PV sensor for the solar-share estimate.
+        self.recent_charges: dict[str, list[dict]] = {}
+        self.solar_entity: str | None = entry.options.get(CONF_SOLAR_ENTITY) or None
         self._past_months: dict[str, dict[str, dict]] = {}
         self._history_year: int | None = None
 
@@ -251,6 +264,40 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
         margin = timedelta(seconds=TOKEN_EXPIRY_SAFETY_MARGIN_SECONDS)
         return dt_util.utcnow() >= (self._token_expires_at - margin)
 
+    async def _async_solar_hourly(
+        self, start: datetime, end: datetime
+    ) -> dict[int, float] | None:
+        """Hourly PV production (kWh) from HA's long-term statistics, or None.
+
+        None means "no PV sensor configured / statistics unavailable" - the
+        solar share is then simply left out rather than shown as 0 %.
+        """
+        if not self.solar_entity:
+            return None
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import (
+                statistics_during_period,
+            )
+            from homeassistant.const import UnitOfEnergy
+
+            stats = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                dt_util.as_utc(start),
+                dt_util.as_utc(end),
+                {self.solar_entity},
+                "hour",
+                {"energy": UnitOfEnergy.KILO_WATT_HOUR},
+                {"change"},
+            )
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.warning(
+                "Could not read PV statistics for %s: %s", self.solar_entity, err
+            )
+            return None
+        return hourly_from_statistics(stats.get(self.solar_entity, []))
+
     async def _async_refresh_energy_stats(self, stations) -> None:
         """Recompute the month/last-month/year totals and last-10-charges list.
 
@@ -275,6 +322,15 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
         need_last_month = last_month_key != self._cached_last_month_key
         if need_last_month:
             last_month_after, last_month_before = month_bounds_utc(*last_month_key)
+
+        # PV production since Jan 1st (plus one month, so the "last 10
+        # charges" in early January still get a solar estimate).
+        hourly_pv = await self._async_solar_hourly(
+            datetime(now.year, 1, 1, tzinfo=local_tz) - timedelta(days=31), now
+        )
+
+        def solar_fn(record):
+            return estimate_solar_kwh(record, hourly_pv) if hourly_pv is not None else None
 
         if self._history_year != now.year:
             # New year (or first run): last year is complete now - reload.
@@ -322,6 +378,10 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
                 self._cached_last_month_records.get(station.id, [])
             )
             self.recent_records[station.id] = most_recent_records(combined, limit=10)
+            self.recent_charges[station.id] = [
+                recent_charge_summary(record, solar_fn(record))
+                for record in self.recent_records[station.id]
+            ]
 
             if station.id not in self._past_months:
                 try:
@@ -336,7 +396,11 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
                         err,
                     )
             months = dict(self._past_months.get(station.id, {}))
-            months.update(group_records_by_month(year_records))
+            months.update(
+                group_records_by_month(
+                    year_records, solar_fn if hourly_pv is not None else None
+                )
+            )
             self.energy_history[station.id] = build_history(months)
 
         if need_last_month:
@@ -356,7 +420,17 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
             )
             if not records:
                 break
-            months.update(group_records_by_month(records))
+            local_tz = dt_util.DEFAULT_TIME_ZONE
+            hourly_pv = await self._async_solar_hourly(
+                datetime(year, 1, 1, tzinfo=local_tz),
+                datetime(year + 1, 1, 1, tzinfo=local_tz),
+            )
+            solar_fn = (
+                (lambda record, pv=hourly_pv: estimate_solar_kwh(record, pv))
+                if hourly_pv is not None
+                else None
+            )
+            months.update(group_records_by_month(records, solar_fn))
         return months
 
     async def _async_fetch_all(self, *, poll_firmware: bool, poll_stats: bool) -> dict:
