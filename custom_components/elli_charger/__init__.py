@@ -7,8 +7,11 @@ from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -28,6 +31,7 @@ from .const import (
     FIRMWARE_POLL_EVERY_N_CYCLES,
     HISTORY_CARD_URL,
     HISTORY_CARD_VERSION,
+    HISTORY_RETRY_SECONDS,
     HISTORY_MAX_YEARS_BACK,
     STATS_POLL_EVERY_N_CYCLES,
     TOKEN_EXPIRY_SAFETY_MARGIN_SECONDS,
@@ -64,9 +68,28 @@ def _looks_like_auth_error(err: Exception) -> bool:
     return "401" in message or "unauthorized" in message
 
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the dashboard card as early as possible.
+
+    v1.6.2: the card used to be registered at the very end of the entry
+    setup - i.e. only after the (slow) first download of the charging
+    history. Dashboards opened during that time showed Home Assistant's
+    "configuration error" for an unknown custom card. Registering it here,
+    before any network traffic, makes the card available right away; it
+    then shows a friendly "loading" message until the data has arrived.
+    """
+    await _async_register_history_card(hass)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Elli Charger from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+    # Idempotent - normally already done in async_setup().
+    await _async_register_history_card(hass)
 
     if CONF_REFRESH_TOKEN not in entry.data:
         # Pre-1.2.0 entries stored an email/password, which the new
@@ -100,9 +123,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Failed to refresh Elli tokens: %s", err)
         return False
 
+    # v1.6.2: the first refresh only reads the cheap live endpoints so the
+    # integration is up within seconds; the charging history (one request
+    # per year, can take a while) is loaded right afterwards in the
+    # background and retried every few minutes until it is complete.
+    coordinator.defer_stats = True
     await coordinator.async_config_entry_first_refresh()
+    coordinator.defer_stats = False
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
+    entry.async_on_unload(coordinator.cancel_stats_retry)
 
     # Improvement #7: react to changes made through the Options Flow (e.g. a
     # new polling interval) without requiring a Home Assistant restart.
@@ -115,8 +145,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # (idempotent - only actually registers on the first config entry).
     async_register_report_service(hass)
 
-    # Year/month history dashboard card (custom:elli-history-card).
-    await _async_register_history_card(hass)
+    # Load the charging history now, without blocking Home Assistant's start.
+    entry.async_create_background_task(
+        hass, coordinator.async_refresh(), f"{DOMAIN} initial history load"
+    )
 
     return True
 
@@ -232,6 +264,39 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
         self.solar_entity: str | None = entry.options.get(CONF_SOLAR_ENTITY) or None
         self._past_months: dict[str, dict[str, dict]] = {}
         self._history_year: int | None = None
+
+        # v1.6.2: history is loaded after setup (defer_stats) and, until it
+        # is complete, retried every HISTORY_RETRY_SECONDS instead of only
+        # on the hourly stats cycle. next_stats_attempt is shown by the card.
+        self.defer_stats = False
+        self._force_stats = True
+        self.next_stats_attempt: datetime | None = None
+        self._stats_retry_unsub: CALLBACK_TYPE | None = None
+
+    @callback
+    def cancel_stats_retry(self) -> None:
+        """Cancel a pending history retry (entry unload)."""
+        if self._stats_retry_unsub is not None:
+            self._stats_retry_unsub()
+            self._stats_retry_unsub = None
+
+    @callback
+    def _schedule_stats_retry(self) -> None:
+        """Try loading the history again in a few minutes."""
+        self.cancel_stats_retry()
+        self._force_stats = True
+        self.next_stats_attempt = dt_util.utcnow() + timedelta(
+            seconds=HISTORY_RETRY_SECONDS
+        )
+
+        @callback
+        def _retry(_now) -> None:
+            self._stats_retry_unsub = None
+            self.hass.async_create_task(self.async_request_refresh())
+
+        self._stats_retry_unsub = async_call_later(
+            self.hass, HISTORY_RETRY_SECONDS, _retry
+        )
 
     async def async_refresh_tokens(self) -> None:
         """Refresh the access token using the stored refresh token.
@@ -406,6 +471,21 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
         if need_last_month:
             self._cached_last_month_key = last_month_key
 
+        complete = all(
+            station.id in self.energy_history and station.id in self._past_months
+            for station in stations
+        )
+        if complete:
+            self.cancel_stats_retry()
+            self._force_stats = False
+            self.next_stats_attempt = None
+        else:
+            _LOGGER.info(
+                "Elli charging history not complete yet, retrying in %s s",
+                HISTORY_RETRY_SECONDS,
+            )
+            self._schedule_stats_retry()
+
     async def _async_load_past_years(
         self, station_id: str, current_year: int
     ) -> dict[str, dict]:
@@ -479,7 +559,15 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
         """Fetch data from the API, refreshing the access token as needed."""
         self._cycle_count += 1
         poll_firmware = (self._cycle_count % FIRMWARE_POLL_EVERY_N_CYCLES) == 1
-        poll_stats = (self._cycle_count % STATS_POLL_EVERY_N_CYCLES) == 1
+        poll_stats = (
+            self._force_stats
+            or (self._cycle_count % STATS_POLL_EVERY_N_CYCLES) == 1
+        ) and not self.defer_stats
+        if self.defer_stats:
+            # Count the setup refresh as "cycle 0" so the hourly stats cycle
+            # still starts with the background load right after setup.
+            self._cycle_count -= 1
+            poll_firmware = True
 
         if self._token_needs_refresh():
             try:
@@ -502,6 +590,8 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
             )
         except Exception as err:  # pylint: disable=broad-except
             if not _looks_like_auth_error(err):
+                if poll_stats and self.next_stats_attempt is None:
+                    self._schedule_stats_retry()
                 raise UpdateFailed(f"Error communicating with API: {err}") from err
 
             _LOGGER.warning(

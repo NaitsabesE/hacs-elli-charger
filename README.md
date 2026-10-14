@@ -136,6 +136,7 @@ Replace `xxxx` with your card's serial number exactly as it appears in the card 
 | `show_live` | `true` | Live header while a car is connected/charging: status, power, kWh and duration of the current session |
 | `show_recent` | `true` | Table of the last charges (start, duration, kWh, Ø kW, card, cost, solar share) |
 | `recent_count` | `10` | Number of rows in the recent charges table (1–10) |
+| `recent_expanded` | `false` | Start with the recent charges unfolded. The table folds like the years: a summary row (count, duration, kWh, cost, solar) that expands to the single charges; the last state is remembered per browser |
 | `show_projection` | `true` | Year-end projection (linear extrapolation, shown from day 14 of the year) |
 | `show_solar` | `true` | Solar share in stats, chart, tooltips and tables – only if a PV sensor is set in the integration options |
 
@@ -143,7 +144,7 @@ The card shows year totals, average per month, number of charges, year-over-year
 
 **Solar share.** Once a PV sensor is configured (see [Options](#options)), the card adds a yellow overlay to the monthly bars and a "Sonne" column to the tables. The value is an **upper-bound estimate**: each charge is spread evenly over its duration and capped, hour by hour, at what the PV system produced. Household consumption and battery storage are not taken into account, so the real solar share can be lower. Periods without PV statistics show `–`.
 
-> If the card doesn't appear right after updating, reload the browser (Ctrl+F5) once. On a fresh install the history is loaded a few minutes after the first start.
+> If the card doesn't appear right after updating, reload the browser (Ctrl+F5) once. After a restart the history is loaded in the background; until it is there, the card shows a loading view with a countdown to the next data request (retried every 3 minutes).
 
 ## Monthly report (PDF)
 

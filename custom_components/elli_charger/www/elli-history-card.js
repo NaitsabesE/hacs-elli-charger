@@ -20,12 +20,17 @@
  *   show_live: true                     # live header while a car is plugged in
  *   show_recent: true                   # table of the last charges
  *   recent_count: 10                    # how many of them (max. 10)
+ *   recent_expanded: false              # start with the last charges unfolded
  *   show_projection: true               # year-end projection for the current year
  *   show_solar: true                    # solar share (needs a PV sensor in the
  *                                       # integration's options)
  */
 
-const CARD_VERSION = "1.6.0";
+const CARD_VERSION = "1.6.2";
+// Home Assistant retries the history download every 3 minutes until it is
+// complete (HISTORY_RETRY_SECONDS in the integration).
+const RETRY_MS = 3 * 60 * 1000;
+const SLOW_MS = 15 * 60 * 1000;
 const MONTHS = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
 const MONTHS_LONG = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
 
@@ -56,10 +61,14 @@ function niceMax(v) {
 
 function findHistoryEntity(hass) {
   if (!hass) return null;
+  const ids = Object.keys(hass.states).filter((id) => id.startsWith("sensor."));
+  // Loaded sensor first; while the history is still loading (or the Elli
+  // cloud is unavailable) fall back to the sensor's typical entity id.
   return (
-    Object.keys(hass.states).find(
-      (id) => id.startsWith("sensor.") && Array.isArray(hass.states[id].attributes.years)
-    ) || null
+    ids.find((id) => Array.isArray(hass.states[id].attributes.years)) ||
+    ids.find((id) => hass.states[id].attributes.loading === true) ||
+    ids.find((id) => id.endsWith("_energy_history")) ||
+    null
   );
 }
 
@@ -149,6 +158,20 @@ const STYLE = `
   .legend span.sol::before { background: var(--g-yellow); }
   .proj { color: var(--g-muted); }
   .empty { padding: 24px 16px; color: var(--g-muted); font-size: 13px; text-align: center; }
+  .wait { padding: 26px 18px 22px; text-align: center; font-size: 13px; color: var(--g-muted); }
+  .wait .ring { width: 34px; height: 34px; margin: 0 auto 14px; border-radius: 50%;
+    border: 3px solid var(--g-grid); border-top-color: var(--g-green); animation: spin 1.1s linear infinite; }
+  .wait.err .ring { border-top-color: var(--g-yellow); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .wait h3 { margin: 0 0 6px; font-size: 15px; font-weight: 500; color: var(--g-text); }
+  .wait p { margin: 0 auto; max-width: 380px; line-height: 1.45; }
+  .wait .next { display: inline-flex; flex-direction: column; gap: 6px; margin-top: 16px; padding: 9px 14px;
+    min-width: 220px; border: 1px solid var(--g-border); border-radius: 4px; background: var(--g-bg2); }
+  .wait .next b { color: var(--g-text); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .wait .bar { height: 3px; border-radius: 2px; background: var(--g-grid); overflow: hidden; }
+  .wait .bar div { height: 100%; background: var(--g-green); transition: width 1s linear; }
+  .wait .nw { white-space: nowrap; }
+  .wait .hint { margin-top: 14px; font-size: 12px; color: var(--g-yellow); }
   .foot { padding: 0 14px 10px; font-size: 10px; color: var(--g-muted); text-align: right; }
   @media (max-width: 480px) { .hide-s { display: none; } .stat .v { font-size: 18px; } }
 </style>`;
@@ -158,6 +181,11 @@ class ElliHistoryCard extends HTMLElement {
     this._config = { compare: true, currency: "€", theme: "dark", title: "Wallbox · Ladehistorie", ...config };
     this._selected = null;
     this._expanded = this._expanded || new Set();
+    if (this._recentOpen === undefined) {
+      let saved = null;
+      try { saved = localStorage.getItem("elli-history-card.recent-open"); } catch (e) { /* ignore */ }
+      this._recentOpen = saved != null ? saved === "1" : config.recent_expanded === true;
+    }
     if (!this.shadowRoot) {
       this.attachShadow({ mode: "open" });
       this._bindEvents();
@@ -185,18 +213,24 @@ class ElliHistoryCard extends HTMLElement {
   disconnectedCallback() {
     clearInterval(this._timer);
     this._timer = null;
+    this._timerMode = null;
   }
 
   // Keep the live header's "since" duration ticking while a car is plugged in.
+  // While waiting for data, tick every second for the countdown.
   _syncTimer() {
-    const lv = this._stateObj()?.attributes?.live;
-    const active = this.isConnected && lv && lv.status && lv.status !== "idle" && this._config?.show_live !== false;
-    if (active && !this._timer) {
-      this._timer = setInterval(() => this._render(), 60000);
-    } else if (!active && this._timer) {
-      clearInterval(this._timer);
-      this._timer = null;
+    let mode = null;
+    if (this.isConnected) {
+      if (this._loading) mode = 1000;
+      else {
+        const lv = this._stateObj()?.attributes?.live;
+        if (lv && lv.status && lv.status !== "idle" && this._config?.show_live !== false) mode = 60000;
+      }
     }
+    if (mode === this._timerMode) return;
+    clearInterval(this._timer);
+    this._timer = mode ? setInterval(() => this._render(), mode) : null;
+    this._timerMode = mode;
   }
 
   _showSolar() {
@@ -238,19 +272,34 @@ class ElliHistoryCard extends HTMLElement {
     const list = st.attributes.recent_charges;
     if (this._config.show_recent === false || !Array.isArray(list) || !list.length) return "";
     const count = Math.max(1, Math.min(10, Number(this._config.recent_count) || 10));
+    const shown = list.slice(0, count);
     const hasCost = Number(this._config.price_per_kwh) > 0;
-    const hasSolar = this._showSolar() && list.some((c) => c.solar_kwh != null);
-    let h = `<div class="section"><span>Letzte Ladungen</span></div><div class="tbl"><table><thead><tr>
-      <th>Start</th><th class="n">Dauer</th><th class="n">kWh</th><th class="n hide-s">Ø kW</th><th class="hide-s">Karte</th>
-      ${hasCost ? `<th class="n">Kosten</th>` : ""}${hasSolar ? `<th class="n">Sonne</th>` : ""}</tr></thead><tbody>`;
-    for (const c of list.slice(0, count)) {
-      h += `<tr><td>${fmtDateTime(c.start)}</td>
-        <td class="n">${c.minutes != null ? fmtDur(c.minutes) : "–"}</td>
-        <td class="n">${fmt(c.kwh, 1)}</td>
-        <td class="n hide-s">${c.avg_kw != null ? fmt(c.avg_kw, 1) : "–"}</td>
-        <td class="hide-s cards">${esc(this._cardName(c.card || ""))}</td>
-        ${hasCost ? `<td class="n">${this._cost(c.kwh)}</td>` : ""}
-        ${hasSolar ? `<td class="n sun">${c.solar_kwh != null ? `≤ ${fmt(pct(c.solar_kwh, c.kwh), 0)} %` : "–"}</td>` : ""}</tr>`;
+    const hasSolar = this._showSolar() && shown.some((c) => c.solar_kwh != null);
+    const open = this._recentOpen;
+    const total = shown.reduce((s, c) => s + (Number(c.kwh) || 0), 0);
+    const solTotal = shown.reduce((s, c) => s + (c.solar_kwh != null ? Number(c.solar_kwh) : 0), 0);
+    const minutes = shown.reduce((s, c) => s + (c.minutes != null ? Number(c.minutes) : 0), 0);
+    let h = `<div class="tbl"><table><thead><tr>
+      <th>Letzte Ladungen</th><th class="n">Dauer</th><th class="n">kWh</th><th class="n hide-s">Ø kW</th><th class="hide-s">Karte</th>
+      ${hasCost ? `<th class="n">Kosten</th>` : ""}${hasSolar ? `<th class="n">Sonne</th>` : ""}</tr></thead><tbody>
+      <tr class="year" data-recent="1">
+        <td class="y"><span class="caret ${open ? "open" : ""}">▸</span> ${shown.length} ${shown.length === 1 ? "Ladung" : "Ladungen"}</td>
+        <td class="n">${minutes > 0 ? fmtDur(minutes) : "–"}</td>
+        <td class="n">${fmt(total, 1)}</td>
+        <td class="n hide-s"></td>
+        <td class="hide-s cards">${open ? "" : `seit ${fmtDateTime(shown[shown.length - 1].start)}`}</td>
+        ${hasCost ? `<td class="n">${this._cost(total)}</td>` : ""}
+        ${hasSolar ? `<td class="n sun">${total > 0 ? `≤ ${fmt(pct(solTotal, total), 0)} %` : "–"}</td>` : ""}</tr>`;
+    if (open) {
+      for (const c of shown) {
+        h += `<tr class="month"><td class="m">${fmtDateTime(c.start)}</td>
+          <td class="n">${c.minutes != null ? fmtDur(c.minutes) : "–"}</td>
+          <td class="n">${fmt(c.kwh, 1)}</td>
+          <td class="n hide-s">${c.avg_kw != null ? fmt(c.avg_kw, 1) : "–"}</td>
+          <td class="hide-s cards">${esc(this._cardName(c.card || ""))}</td>
+          ${hasCost ? `<td class="n">${this._cost(c.kwh)}</td>` : ""}
+          ${hasSolar ? `<td class="n sun">${c.solar_kwh != null ? `≤ ${fmt(pct(c.solar_kwh, c.kwh), 0)} %` : "–"}</td>` : ""}</tr>`;
+      }
     }
     return h + "</tbody></table></div>";
   }
@@ -286,18 +335,92 @@ class ElliHistoryCard extends HTMLElement {
   }
 
   // ---------------------------------------------------------------- render
+  // Never let a rendering problem turn into Home Assistant's red
+  // "configuration error" box - show a friendly message and try again with
+  // the next data update instead.
   _render() {
     if (!this.shadowRoot || !this._config) return;
+    const wasLoading = this._loading;
+    try {
+      this._loading = false;
+      this._renderCard();
+      this._lastError = null;
+      if (!this._loading) this._waitSince = this._waitKey = null;
+    } catch (err) {
+      if (String(err) !== this._lastError) console.error("elli-history-card:", err);
+      this._lastError = String(err);
+      this._loading = true;
+      this._renderWait({ error: true });
+    }
+    if (wasLoading !== this._loading) this._syncTimer();
+  }
+
+  _head(chips = "") {
+    return `<div class="head"><div class="title"><span class="dot"></span>${esc(this._config.title)}</div>
+      <div class="chips">${chips}</div></div>`;
+  }
+
+  // Waiting view with a countdown to the next data request.
+  _renderWait({ error = false } = {}) {
+    const st = this._stateObj();
+    const now = Date.now();
+    if (!this._waitSince) this._waitSince = now;
+    const waited = now - this._waitSince;
+
+    // Exact time from the integration if it told us, otherwise the next
+    // 3-minute step since the card started waiting.
+    let next = st && st.attributes && st.attributes.next_refresh ? Date.parse(st.attributes.next_refresh) : NaN;
+    if (!(next > now - 5000)) next = this._waitSince + RETRY_MS * Math.max(1, Math.ceil(waited / RETRY_MS));
+    const left = Math.max(0, next - now);
+    const secs = Math.ceil(left / 1000);
+    const clock = new Date(next).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+    const progress = Math.min(100, Math.max(0, 100 - (left / RETRY_MS) * 100));
+
+    const unavailable = st && st.state === "unavailable";
+    let title = "Ladehistorie wird geladen";
+    let text = "Nach einem Neustart holt Home Assistant die Ladedaten bei Elli ab – das dauert einen Moment. Die Karte aktualisiert sich von selbst.";
+    if (!st) {
+      title = "Elli-Integration startet";
+      text = "Home Assistant richtet die Elli-Integration gerade ein. Sobald die ersten Daten da sind, erscheint hier die Ladehistorie.";
+    } else if (unavailable) {
+      title = "Elli-Cloud gerade nicht erreichbar";
+      text = "Die letzte Abfrage bei Elli ist fehlgeschlagen. Home Assistant versucht es automatisch erneut.";
+    } else if (error) {
+      title = "Daten noch unvollständig";
+      text = "Die Ladedaten konnten noch nicht vollständig dargestellt werden. Mit dem nächsten Datenabruf wird es erneut versucht.";
+    }
+    const due = secs > 0
+      ? `Nächster Datenabruf in <b>${Math.floor(secs / 60)}:${pad2(secs % 60)} Min</b> <span class="nw">· ca. ${clock} Uhr</span>`
+      : `<b>Daten werden abgerufen …</b>`;
+    let hint = "";
+    if (waited > SLOW_MS) {
+      hint = `<div class="hint">Das dauert ungewöhnlich lange. Bitte unter Einstellungen → Geräte &amp; Dienste → Elli Charger
+        den Status prüfen${this._config.entity && !st ? ` (Sensor <code>${esc(this._config.entity)}</code> nicht gefunden)` : ""}.</div>`;
+    }
+    this._loading = true;
+    // Same message as before: only update the countdown, so the spinner
+    // keeps turning smoothly instead of restarting every second.
+    const key = [this._config.title, title, text, hint, error || unavailable].join("|");
+    const box = this._waitKey === key && this.shadowRoot.querySelector(".wait .next");
+    if (box) {
+      box.firstElementChild.innerHTML = due;
+      box.querySelector(".bar div").style.width = `${progress}%`;
+      return;
+    }
+    this._waitKey = key;
+    this.shadowRoot.innerHTML = `${STYLE}<ha-card>${this._head()}<div class="wait ${error || unavailable ? "err" : ""}">
+      <div class="ring"></div><h3>${title}</h3><p>${text}</p>
+      <div class="next"><span>${due}</span><div class="bar"><div style="width:${progress}%"></div></div></div>
+      ${hint}</div></ha-card>`;
+  }
+
+  _renderCard() {
     const st = this._stateObj();
     const years = this._years();
-    const head = (chips = "") => `
-      <div class="head"><div class="title"><span class="dot"></span>${esc(this._config.title)}</div>
-      <div class="chips">${chips}</div></div>`;
+    const head = (chips = "") => this._head(chips);
 
     if (!st || !years) {
-      this.shadowRoot.innerHTML = `${STYLE}<ha-card>${head()}<div class="empty">
-        Kein „Energy History“-Sensor der Elli-Integration gefunden${this._config.entity ? ` (${esc(this._config.entity)})` : ""}.<br>
-        Nach einem Neustart kann es einige Minuten dauern, bis die Historie geladen ist.</div></ha-card>`;
+      this._renderWait();
       return;
     }
     if (!years.length) {
@@ -491,6 +614,12 @@ class ElliHistoryCard extends HTMLElement {
       const chip = ev.target.closest("[data-year]");
       if (chip) {
         this._selected = Number(chip.dataset.year);
+        this._render();
+        return;
+      }
+      if (ev.target.closest("[data-recent]")) {
+        this._recentOpen = !this._recentOpen;
+        try { localStorage.setItem("elli-history-card.recent-open", this._recentOpen ? "1" : "0"); } catch (e) { /* ignore */ }
         this._render();
         return;
       }

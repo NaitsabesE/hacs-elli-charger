@@ -54,9 +54,12 @@ REPORT_RECORDS_PAGE_SIZE = 100
 # How many *completed* years before the current one we look back at most.
 # Loading stops earlier at the first year without any charging records.
 HISTORY_MAX_YEARS_BACK = 10
+# Until the history is complete (after a restart or an Elli API hiccup) it is
+# retried this often instead of only on the hourly stats cycle.
+HISTORY_RETRY_SECONDS = 180
 # The dashboard card ships with the integration and is served from here.
 HISTORY_CARD_URL = "/elli_charger/elli-history-card.js"
-HISTORY_CARD_VERSION = "1.6.0"
+HISTORY_CARD_VERSION = "1.6.2"
 
 # --- Automatic login callback (Windows protocol-handler helper) ---
 # Elli only accepts its own mobile-app redirect URI, which a desktop browser

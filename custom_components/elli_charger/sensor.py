@@ -457,7 +457,9 @@ class ElliEnergyHistorySensor(ElliStationEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _unrecorded_attributes = frozenset({"years", "recent_charges", "live"})
+    _unrecorded_attributes = frozenset(
+        {"years", "recent_charges", "live", "loading", "next_refresh"}
+    )
 
     def __init__(self, coordinator, station_id: str) -> None:
         """Initialize the sensor."""
@@ -493,7 +495,13 @@ class ElliEnergyHistorySensor(ElliStationEntity, SensorEntity):
         """Return the year/month breakdown."""
         history = self._history()
         if history is None:
-            return {}
+            # v1.6.2: still loading - tell the dashboard card when the next
+            # attempt is due so it can show a countdown instead of an error.
+            nxt = self.coordinator.next_stats_attempt
+            return {
+                "loading": True,
+                "next_refresh": nxt.isoformat() if nxt else None,
+            }
         attrs: dict[str, Any] = {
             "years": history,
             "charges": sum(year["charges"] for year in history),

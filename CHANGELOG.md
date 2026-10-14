@@ -29,7 +29,7 @@ Large feature and robustness update. Existing entity IDs are kept (all `unique_i
 - **Energy History sensor** – all-time total in kWh with a year → month → RFID-card breakdown in its attributes (excluded from the recorder to keep the database small).
 - **Dashboard card `custom:elli-history-card`** – Grafana-style year/month overview with year-over-year comparison, per-card breakdown and optional cost calculation. It ships with the integration and is loaded automatically (no extra resource needed).
 - **Dashboard card: live header** – while a car is connected or charging, the card shows status, current power, energy and duration of the running session (updates every minute).
-- **Dashboard card: recent charges table** – start, duration, kWh, average kW, card, cost and solar share of the last charges (`show_recent`, `recent_count`).
+- **Dashboard card: recent charges table** – start, duration, kWh, average kW, card, cost and solar share of the last charges (`show_recent`, `recent_count`). Collapsible like the year rows: a summary row expands to the single charges (`recent_expanded`, state remembered per browser).
 - **Dashboard card: year projection** – linear extrapolation of the current year's total, shown from day 14 (`show_projection`).
 - **Solar share (optional)** – pick a PV energy sensor in the integration options; the charge energy covered by PV is estimated from Home Assistant's long-term statistics (upper bound) and shown as overlay, tooltip, stat and table column in the card (`show_solar`). Energy History gains `recent_charges` and `live` attributes.
 - **Service `elli_charger.send_monthly_report`** – creates a PDF with kWh per RFID card for a month and can send it through any `notify` service (e.g. SMTP e-mail).
@@ -45,6 +45,8 @@ Large feature and robustness update. Existing entity IDs are kept (all `unique_i
 - Firmware info is polled only every 6th cycle and history statistics roughly once an hour, reducing API calls.
 
 ### Fixed
+- **Dashboard card no longer shows a "configuration error" after a restart.** The card is now registered when Home Assistant loads the integration, before any Elli request, instead of only after the first (slow) history download. While data is still missing, the card shows a loading view with a countdown to the next data request instead of an error, and rendering problems are caught.
+- **Charging history is loaded in the background and retried every 3 minutes** until it is complete (previously only on the hourly statistics cycle), so a temporary Elli API error no longer leaves the history empty for up to an hour. Setup itself no longer waits for the history download.
 - **Options dialog (polling interval) crashed on current Home Assistant versions** (`AttributeError: property 'config_entry' … has no setter`); the options flow no longer assigns `config_entry` itself.
 - **Session Energy** no longer drops to `unknown` between sessions or after a restart (last value is restored), which avoids gaps in the Energy Dashboard.
 - Rotated refresh tokens are persisted, so the integration doesn't break after a Home Assistant restart.
