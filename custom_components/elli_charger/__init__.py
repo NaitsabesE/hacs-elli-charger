@@ -31,6 +31,7 @@ from .const import (
     FIRMWARE_POLL_EVERY_N_CYCLES,
     HISTORY_CARD_URL,
     HISTORY_CARD_VERSION,
+    HISTORY_MAX_QUICK_RETRIES,
     HISTORY_RETRY_SECONDS,
     HISTORY_MAX_YEARS_BACK,
     STATS_POLL_EVERY_N_CYCLES,
@@ -272,6 +273,7 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
         self._force_stats = True
         self.next_stats_attempt: datetime | None = None
         self._stats_retry_unsub: CALLBACK_TYPE | None = None
+        self._stats_failures = 0
 
     @callback
     def cancel_stats_retry(self) -> None:
@@ -282,8 +284,24 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
 
     @callback
     def _schedule_stats_retry(self) -> None:
-        """Try loading the history again in a few minutes."""
+        """Try loading the history again in a few minutes.
+
+        After HISTORY_MAX_QUICK_RETRIES failed attempts in a row, fall back
+        to the normal hourly statistics cycle so a persistent API problem
+        doesn't hit Elli every few minutes all day.
+        """
         self.cancel_stats_retry()
+        self._stats_failures += 1
+        if self._stats_failures > HISTORY_MAX_QUICK_RETRIES:
+            if self._stats_failures == HISTORY_MAX_QUICK_RETRIES + 1:
+                _LOGGER.warning(
+                    "Elli charging history still incomplete after %s attempts - "
+                    "retrying with the hourly statistics update from now on",
+                    HISTORY_MAX_QUICK_RETRIES,
+                )
+            self._force_stats = False
+            self.next_stats_attempt = None
+            return
         self._force_stats = True
         self.next_stats_attempt = dt_util.utcnow() + timedelta(
             seconds=HISTORY_RETRY_SECONDS
@@ -479,6 +497,7 @@ class ElliDataUpdateCoordinator(DataUpdateCoordinator):
             self.cancel_stats_retry()
             self._force_stats = False
             self.next_stats_attempt = None
+            self._stats_failures = 0
         else:
             _LOGGER.info(
                 "Elli charging history not complete yet, retrying in %s s",

@@ -57,9 +57,11 @@ HISTORY_MAX_YEARS_BACK = 10
 # Until the history is complete (after a restart or an Elli API hiccup) it is
 # retried this often instead of only on the hourly stats cycle.
 HISTORY_RETRY_SECONDS = 180
+# ...but only this many times in a row, then the hourly cycle takes over.
+HISTORY_MAX_QUICK_RETRIES = 5
 # The dashboard card ships with the integration and is served from here.
 HISTORY_CARD_URL = "/elli_charger/elli-history-card.js"
-HISTORY_CARD_VERSION = "1.6.2"
+HISTORY_CARD_VERSION = "1.6.3"
 
 # --- Automatic login callback (Windows protocol-handler helper) ---
 # Elli only accepts its own mobile-app redirect URI, which a desktop browser

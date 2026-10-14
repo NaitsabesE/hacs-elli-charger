@@ -8,11 +8,14 @@ place.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from homeassistant.util import dt as dt_util
 
 from .const import REPORT_MAX_RECORD_PAGES, REPORT_RECORDS_PAGE_SIZE
+
+_LOGGER = logging.getLogger(__name__)
 
 _FMT = "%Y-%m-%dT%H:%M:%SZ"
 UNKNOWN_CARD_LABEL = "Ohne Karte / App"
@@ -46,6 +49,99 @@ def month_bounds_utc(year: int, month: int) -> tuple[str, str]:
     return local_bounds_to_utc(start_local, end_local)
 
 
+def _records_page_lenient(
+    client, station_id: str, created_after: str, created_before: str, limit: int, offset: int
+) -> list:
+    """One page of charging records, tolerant of incomplete entries.
+
+    v1.6.3: Elli occasionally returns records without `total_energy_wh`
+    (e.g. aborted sessions). `elli-client` validates the whole page strictly,
+    so a single such record made it reject the entire page - and with it the
+    whole year of history. Here every record is validated on its own;
+    records without an energy value are skipped (they carry no charged
+    energy), other incomplete ones are kept with neutral defaults.
+    Falls back to the client's own method if its internals look different.
+    """
+    from elli_client import ChargingRecord  # pylint: disable=import-outside-toplevel
+
+    http = getattr(client, "client", None)
+    headers = getattr(client, "_get_headers", None)
+    base = getattr(client, "api_base_url", None)
+    if http is None or headers is None or base is None:
+        return client.get_charging_records(
+            station_id=station_id,
+            created_after=created_after,
+            created_before=created_before,
+            limit=limit,
+            offset=offset,
+        )
+
+    response = http.get(
+        f"{base}/chargeathome/v1/chargingrecords",
+        headers=headers(),
+        params={
+            "station_id": station_id,
+            "limit": limit,
+            "offset": offset,
+            "sort": "created_at",
+            "created_after": created_after,
+            "created_before": created_before,
+        },
+    )
+    if response.status_code != 200:
+        raise ValueError(
+            f"Failed to get charging records: {response.status_code} - {response.text}"
+        )
+    raw_records = (response.json() or {}).get("charging_records") or []
+
+    records: list = []
+    skipped = 0
+    for raw in raw_records:
+        if not isinstance(raw, dict):
+            skipped += 1
+            continue
+        if raw.get("total_energy_wh") is None:
+            skipped += 1
+            continue
+        try:
+            records.append(ChargingRecord(**raw))
+        except Exception:  # pylint: disable=broad-except
+            # Keep the record with neutral defaults for whatever is missing;
+            # only energy, timestamps and card are used by this integration.
+            defaults = {
+                "id": "",
+                "created_at": raw.get("start_date_time") or "",
+                "start_date_time": raw.get("created_at") or "",
+                "stop_date_time": raw.get("start_date_time") or raw.get("created_at") or "",
+                "session_faulted": False,
+                "charging_session_id": "",
+                "transaction_id": "",
+                "connector_id": 0,
+                "station_id": station_id,
+                "station_serial_number": "",
+                "station_name": "",
+                "station_model": "",
+            }
+            data = {**defaults, **{k: v for k, v in raw.items() if v is not None}}
+            try:
+                data["total_energy_wh"] = int(float(data["total_energy_wh"]))
+            except (TypeError, ValueError):
+                skipped += 1
+                continue
+            data.pop("location", None)
+            records.append(ChargingRecord.model_construct(**data))
+    if skipped:
+        _LOGGER.debug(
+            "Skipped %s Elli charging record(s) without energy value (%s - %s)",
+            skipped,
+            created_after,
+            created_before,
+        )
+    # Page size is decided on the raw count, so skipping doesn't stop paging early.
+    records_page_size = len(raw_records)
+    return records, records_page_size
+
+
 def fetch_station_records(
     client, station_id: str, created_after: str, created_before: str
 ) -> list:
@@ -58,15 +154,20 @@ def fetch_station_records(
     records: list = []
     offset = 0
     for _ in range(REPORT_MAX_RECORD_PAGES):
-        page = client.get_charging_records(
-            station_id=station_id,
-            created_after=created_after,
-            created_before=created_before,
-            limit=REPORT_RECORDS_PAGE_SIZE,
-            offset=offset,
+        result = _records_page_lenient(
+            client,
+            station_id,
+            created_after,
+            created_before,
+            REPORT_RECORDS_PAGE_SIZE,
+            offset,
         )
+        if isinstance(result, tuple):
+            page, raw_count = result
+        else:
+            page, raw_count = result, len(result)
         records.extend(page)
-        if len(page) < REPORT_RECORDS_PAGE_SIZE:
+        if raw_count < REPORT_RECORDS_PAGE_SIZE:
             break
         offset += REPORT_RECORDS_PAGE_SIZE
     return records

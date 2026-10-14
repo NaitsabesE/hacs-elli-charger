@@ -26,7 +26,7 @@
  *                                       # integration's options)
  */
 
-const CARD_VERSION = "1.6.2";
+const CARD_VERSION = "1.6.3";
 // Home Assistant retries the history download every 3 minutes until it is
 // complete (HISTORY_RETRY_SECONDS in the integration).
 const RETRY_MS = 3 * 60 * 1000;

@@ -46,7 +46,8 @@ Large feature and robustness update. Existing entity IDs are kept (all `unique_i
 
 ### Fixed
 - **Dashboard card no longer shows a "configuration error" after a restart.** The card is now registered when Home Assistant loads the integration, before any Elli request, instead of only after the first (slow) history download. While data is still missing, the card shows a loading view with a countdown to the next data request instead of an error, and rendering problems are caught.
-- **Charging history is loaded in the background and retried every 3 minutes** until it is complete (previously only on the hourly statistics cycle), so a temporary Elli API error no longer leaves the history empty for up to an hour. Setup itself no longer waits for the history download.
+- **History no longer fails on incomplete records.** Elli sometimes returns charging records without `total_energy_wh` (e.g. aborted sessions); `elli-client` then rejected the whole page and the integration lost the entire year (`validation errors for ChargingRecordsResponse`). Records are now validated one by one; ones without energy are skipped. This also fixes the monthly PDF report for such months.
+- **Charging history is loaded in the background and retried every 3 minutes** until it is complete (up to 5 times, then hourly; previously only on the hourly statistics cycle), so a temporary Elli API error no longer leaves the history empty for up to an hour. Setup itself no longer waits for the history download.
 - **Options dialog (polling interval) crashed on current Home Assistant versions** (`AttributeError: property 'config_entry' … has no setter`); the options flow no longer assigns `config_entry` itself.
 - **Session Energy** no longer drops to `unknown` between sessions or after a restart (last value is restored), which avoids gaps in the Energy Dashboard.
 - Rotated refresh tokens are persisted, so the integration doesn't break after a Home Assistant restart.
