@@ -21,12 +21,14 @@
  *   show_recent: true                   # table of the last charges
  *   recent_count: 10                    # how many of them (max. 10)
  *   recent_expanded: false              # start with the last charges unfolded
+ *   show_billing: true                  # tenant billing: amount + "paid on" per month/card,
+ *                                       # with PDF report (needs price_per_kwh)
  *   show_projection: true               # year-end projection for the current year
  *   show_solar: true                    # solar share (needs a PV sensor in the
  *                                       # integration's options)
  */
 
-const CARD_VERSION = "1.6.3";
+const CARD_VERSION = "1.6.4";
 // Home Assistant retries the history download every 3 minutes until it is
 // complete (HISTORY_RETRY_SECONDS in the integration).
 const RETRY_MS = 3 * 60 * 1000;
@@ -173,6 +175,26 @@ const STYLE = `
   .wait .nw { white-space: nowrap; }
   .wait .hint { margin-top: 14px; font-size: 12px; color: var(--g-yellow); }
   .foot { padding: 0 14px 10px; font-size: 10px; color: var(--g-muted); text-align: right; }
+  .bill-head { cursor: pointer; }
+  .bill-tools { display: flex; align-items: center; gap: 10px; }
+  .bill-tools .due { color: var(--g-orange, #ff9830); font-weight: 500; }
+  .bill-tools .done { color: var(--g-green); font-weight: 500; }
+  .btn { font: inherit; font-size: 12px; color: var(--g-text); background: var(--g-bg2); border: 1px solid var(--g-border);
+    border-radius: 4px; padding: 4px 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .btn:hover { border-color: var(--g-green); }
+  .btn[disabled] { opacity: .6; cursor: progress; }
+  tr.bm td { font-size: 12px; }
+  tr.bm.first td { border-top: 1px solid var(--g-border); }
+  tr.bm td.mon { color: var(--g-muted); white-space: nowrap; }
+  tr.bm.first td.mon { color: var(--g-text); }
+  input.pay { font: inherit; font-size: 12px; color: var(--g-text); background: var(--g-bg2); border: 1px solid var(--g-border);
+    border-radius: 4px; padding: 2px 6px; color-scheme: dark; max-width: 128px; }
+  :host(.ha-theme) input.pay { color-scheme: normal; }
+  tr.bm.paid input.pay { border-color: var(--g-green); }
+  tr.bm.open input.pay { border-color: var(--g-orange, #ff9830); }
+  td.st { width: 16px; text-align: center; }
+  td.st .ok { color: var(--g-green); } td.st .no { color: var(--g-orange, #ff9830); }
+  .bill-err { padding: 0 14px 8px; font-size: 12px; color: var(--g-red); }
   @media (max-width: 480px) { .hide-s { display: none; } .stat .v { font-size: 18px; } }
 </style>`;
 
@@ -185,6 +207,11 @@ class ElliHistoryCard extends HTMLElement {
       let saved = null;
       try { saved = localStorage.getItem("elli-history-card.recent-open"); } catch (e) { /* ignore */ }
       this._recentOpen = saved != null ? saved === "1" : config.recent_expanded === true;
+    }
+    if (this._billOpen === undefined) {
+      let saved = null;
+      try { saved = localStorage.getItem("elli-history-card.billing-open"); } catch (e) { /* ignore */ }
+      this._billOpen = saved != null ? saved === "1" : true;
     }
     if (!this.shadowRoot) {
       this.attachShadow({ mode: "open" });
@@ -201,7 +228,10 @@ class ElliHistoryCard extends HTMLElement {
     const sig = st ? `${st.entity_id}|${st.last_updated}` : "none";
     if (sig !== this._sig) {
       this._sig = sig;
-      this._render();
+      // Don't rebuild the card while a "paid on" date picker is open.
+      const active = this.shadowRoot && this.shadowRoot.activeElement;
+      if (active && active.classList && active.classList.contains("pay")) this._renderPending = true;
+      else this._render();
     }
     this._syncTimer();
   }
@@ -505,6 +535,7 @@ class ElliHistoryCard extends HTMLElement {
       ${this._recentHtml(st)}
       <div class="section"><span>Jahre &amp; Monate</span></div>
       <div class="tbl">${this._table(years, now)}</div>
+      ${this._billingHtml(st, sel, now)}
       <div class="foot">Elli Charger · v${CARD_VERSION}</div>
     </ha-card>`;
   }
@@ -559,6 +590,81 @@ class ElliHistoryCard extends HTMLElement {
     const entries = Object.entries(cards || {});
     if (!entries.length) return "";
     return entries.map(([k, v]) => `${esc(this._cardName(k))}: ${fmt(v, 1)} kWh`).join(sep);
+  }
+
+  // Tenant billing: amount and "paid on" date per month and card.
+  _billingHtml(st, sel, now) {
+    if (this._config.show_billing === false || !sel) return "";
+    const price = Number(this._config.price_per_kwh) > 0 ? Number(this._config.price_per_kwh) : 0;
+    const payments = (st.attributes && st.attributes.payments) || {};
+    const isCur = sel.year === now.getFullYear();
+    const last = isCur ? now.getMonth() : 11;
+    let rows = "", due = 0, total = 0, n = 0;
+    for (let i = last; i >= 0; i--) {
+      const m = sel.months[i];
+      const cards = Object.entries(m.cards || {}).filter(([, kwh]) => kwh > 0)
+        .sort((a, b) => this._cardName(a[0]).localeCompare(this._cardName(b[0])));
+      cards.forEach(([label, kwh], k) => {
+        const key = `${sel.year}-${pad2(i + 1)}`;
+        const paid = (payments[key] || {})[label] || "";
+        const amount = Math.round(kwh * price * 100) / 100;
+        const running = isCur && i === last;
+        total += amount; n += 1;
+        if (!paid && !running) due += amount;
+        const cls = paid ? "paid" : (!running && price > 0 ? "open" : "");
+        rows += `<tr class="bm ${k === 0 ? "first" : ""} ${cls}">
+          <td class="mon">${k === 0 ? MONTHS_LONG[i] + (running ? " <span class='cards'>(lfd.)</span>" : "") : ""}</td>
+          <td class="cards">${esc(this._cardName(label))}</td>
+          <td class="n ${price ? "hide-s" : ""}">${fmt(kwh, 1)}</td>
+          ${price ? `<td class="n">${this._cost(kwh)}</td>` : ""}
+          <td class="st">${paid ? '<span class="ok">✓</span>' : (cls === "open" ? '<span class="no">●</span>' : "")}</td>
+          <td><input type="date" class="pay" data-month="${key}" data-card="${esc(label)}" value="${esc(paid)}"
+            title="Bezahlt am"></td></tr>`;
+      });
+    }
+    if (!n) return "";
+    const status = price > 0
+      ? (due > 0.004 ? `<span class="due">offen ${fmt(due, 2)} ${esc(this._config.currency)}</span>`
+                     : `<span class="done">alles bezahlt ✓</span>`)
+      : "";
+    const head = `<div class="section bill-head" data-bill="1"><span><span class="caret ${this._billOpen ? "open" : ""}">▸</span>
+      Abrechnung ${sel.year}</span><span class="bill-tools">${status}
+      <button class="btn" data-pdf="${sel.year}" ${this._pdfBusy ? "disabled" : ""}>${this._pdfBusy ? "Erstelle …" : "📄 PDF-Bericht"}</button></span></div>`;
+    const err = this._pdfError ? `<div class="bill-err">${esc(this._pdfError)}</div>` : "";
+    if (!this._billOpen) return head + err;
+    return `${head}${err}<div class="tbl"><table><thead><tr><th>Monat</th><th>Mieter / Karte</th>
+      <th class="n ${price ? "hide-s" : ""}">kWh</th>${price ? `<th class="n">Betrag</th>` : ""}<th></th><th>Bezahlt am</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }
+
+  async _createPdf(year) {
+    if (this._pdfBusy || !this._hass) return;
+    // Open the window right away (inside the click), so pop-up blockers allow it.
+    const win = window.open("", "_blank");
+    if (win) win.document.write("<p style='font-family:sans-serif;padding:20px'>Abrechnung wird erstellt …</p>");
+    this._pdfBusy = true; this._pdfError = null; this._render();
+    try {
+      const res = await this._hass.connection.sendMessagePromise({
+        type: "call_service", domain: "elli_charger", service: "create_billing_report",
+        service_data: {
+          year,
+          price_per_kwh: Number(this._config.price_per_kwh) || 0,
+          currency: this._config.currency || "€",
+          card_names: this._config.card_names || {},
+        },
+        return_response: true,
+      });
+      const info = res.response || res;
+      const r = await this._hass.fetchWithAuth(info.url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const url = URL.createObjectURL(await r.blob());
+      if (win) win.location.href = url;
+      else { const a = document.createElement("a"); a.href = url; a.download = `abrechnung_${year}.pdf`; a.click(); }
+    } catch (err) {
+      if (win) win.close();
+      this._pdfError = `PDF konnte nicht erstellt werden: ${err && (err.message || err.code) || err}`;
+    }
+    this._pdfBusy = false; this._render();
   }
 
   _table(years, now) {
@@ -617,6 +723,18 @@ class ElliHistoryCard extends HTMLElement {
         this._render();
         return;
       }
+      const pdf = ev.target.closest("[data-pdf]");
+      if (pdf) {
+        ev.stopPropagation();
+        this._createPdf(Number(pdf.dataset.pdf));
+        return;
+      }
+      if (ev.target.closest("[data-bill]")) {
+        this._billOpen = !this._billOpen;
+        try { localStorage.setItem("elli-history-card.billing-open", this._billOpen ? "1" : "0"); } catch (e) { /* ignore */ }
+        this._render();
+        return;
+      }
       if (ev.target.closest("[data-recent]")) {
         this._recentOpen = !this._recentOpen;
         try { localStorage.setItem("elli-history-card.recent-open", this._recentOpen ? "1" : "0"); } catch (e) { /* ignore */ }
@@ -630,6 +748,20 @@ class ElliHistoryCard extends HTMLElement {
         else this._expanded.add(y);
         this._selected = y;
         this._render();
+      }
+    });
+
+    root.addEventListener("change", (ev) => {
+      const inp = ev.target.closest && ev.target.closest("input.pay");
+      if (!inp || !this._hass) return;
+      this._hass.callService("elli_charger", "set_payment", {
+        month: inp.dataset.month, card: inp.dataset.card, paid_on: inp.value || "",
+      }).catch((err) => { this._pdfError = `Speichern fehlgeschlagen: ${err && err.message || err}`; this._render(); });
+    });
+    root.addEventListener("focusout", (ev) => {
+      if (this._renderPending && ev.target.classList && ev.target.classList.contains("pay")) {
+        this._renderPending = false;
+        setTimeout(() => this._render(), 50);
       }
     });
 

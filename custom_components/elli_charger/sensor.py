@@ -17,6 +17,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
+from .billing import async_get_payments
 from .const import DATA_SESSIONS, DATA_STATIONS, DOMAIN
 from .energy_periods import card_label
 
@@ -458,7 +459,7 @@ class ElliEnergyHistorySensor(ElliStationEntity, SensorEntity):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _unrecorded_attributes = frozenset(
-        {"years", "recent_charges", "live", "loading", "next_refresh"}
+        {"years", "recent_charges", "live", "loading", "next_refresh", "payments"}
     )
 
     def __init__(self, coordinator, station_id: str) -> None:
@@ -512,6 +513,10 @@ class ElliEnergyHistorySensor(ElliStationEntity, SensorEntity):
         }
         if self.coordinator.solar_entity:
             attrs["solar_entity"] = self.coordinator.solar_entity
+        # v1.6.4 - payment dates per month and card, for tenant billing.
+        attrs["payments"] = {
+            month: dict(cards) for month, cards in async_get_payments(self.hass).items()
+        }
         return attrs
 
     def _live(self) -> dict[str, Any]:

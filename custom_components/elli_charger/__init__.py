@@ -50,6 +50,7 @@ from .energy_periods import (
     sum_energy_kwh,
     year_bounds_utc,
 )
+from .billing import async_setup_billing
 from .report import SERVICE_SEND_MONTHLY_REPORT, async_register_report_service
 
 _LOGGER = logging.getLogger(__name__)
@@ -145,6 +146,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Bonus feature: register the monthly kWh-per-RFID-card report service
     # (idempotent - only actually registers on the first config entry).
     async_register_report_service(hass)
+
+    # v1.6.4: tenant billing (payment dates + yearly PDF report).
+    await async_setup_billing(hass)
 
     # Load the charging history now, without blocking Home Assistant's start.
     entry.async_create_background_task(

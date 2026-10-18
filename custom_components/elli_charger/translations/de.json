@@ -88,6 +88,50 @@
           "description": "Bericht auf ein Elli-Konto beschränken, falls mehrere konfiguriert sind."
         }
       }
+    },
+    "set_payment": {
+      "name": "Zahlungsdatum setzen",
+      "description": "Speichert, wann die Ladekosten eines Monats für eine Ladekarte bezahlt wurden. Leeres Datum entfernt den Eintrag.",
+      "fields": {
+        "month": {
+          "name": "Monat",
+          "description": "Monat im Format JJJJ-MM."
+        },
+        "card": {
+          "name": "Karte",
+          "description": "Kartenbezeichnung wie in der Historie, z. B. \"RFID 04A1B2C3\"."
+        },
+        "paid_on": {
+          "name": "Bezahlt am",
+          "description": "Zahlungsdatum. Leer = Eintrag löschen."
+        }
+      }
+    },
+    "create_billing_report": {
+      "name": "Abrechnung als PDF erstellen",
+      "description": "Erstellt ein PDF mit Verbrauch, Betrag und Zahlungsdatum je Monat und Ladekarte für ein Jahr.",
+      "fields": {
+        "year": {
+          "name": "Jahr",
+          "description": "Standard: aktuelles Jahr."
+        },
+        "price_per_kwh": {
+          "name": "Preis pro kWh",
+          "description": "Preis für die Beträge."
+        },
+        "currency": {
+          "name": "Währung",
+          "description": "Währungssymbol."
+        },
+        "card_names": {
+          "name": "Kartennamen",
+          "description": "Zuordnung Kartenbezeichnung → Mieter."
+        },
+        "title": {
+          "name": "Titel",
+          "description": "Optionaler Titel des Berichts."
+        }
+      }
     }
   }
 }

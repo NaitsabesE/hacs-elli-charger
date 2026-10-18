@@ -88,6 +88,50 @@
           "description": "Restrict the report to one Elli account, if more than one is configured."
         }
       }
+    },
+    "set_payment": {
+      "name": "Set payment date",
+      "description": "Records the date on which the charging costs of one month and RFID card were paid. Leave the date empty to remove it again.",
+      "fields": {
+        "month": {
+          "name": "Month",
+          "description": "Month as YYYY-MM."
+        },
+        "card": {
+          "name": "Card",
+          "description": "Card label as shown in the history, e.g. \"RFID 04A1B2C3\"."
+        },
+        "paid_on": {
+          "name": "Paid on",
+          "description": "Payment date. Empty removes it."
+        }
+      }
+    },
+    "create_billing_report": {
+      "name": "Create billing report",
+      "description": "Creates a PDF with the monthly kWh, amount and payment date per RFID card for one year.",
+      "fields": {
+        "year": {
+          "name": "Year",
+          "description": "Defaults to the current year."
+        },
+        "price_per_kwh": {
+          "name": "Price per kWh",
+          "description": "Price used for the amounts."
+        },
+        "currency": {
+          "name": "Currency",
+          "description": "Currency symbol."
+        },
+        "card_names": {
+          "name": "Card names",
+          "description": "Map of card labels to tenant names."
+        },
+        "title": {
+          "name": "Title",
+          "description": "Optional report title."
+        }
+      }
     }
   }
 }

@@ -13,6 +13,7 @@ Home Assistant integration for Elli charging stations (wallboxes). Monitor your 
 - All-time charging history (year → month → RFID card)
 - Bundled dashboard card with a Grafana-style year/month overview, live charging header, recent charges, year projection and optional solar share
 - Monthly PDF report per RFID card, optionally sent by e-mail
+- Tenant billing: record when each month was paid per RFID card and print a yearly billing report (PDF)
 - All sensors grouped under one device per wallbox
 - Browser-based login (no password stored), automatic token refresh and re-authentication
 - Configurable polling interval
@@ -136,6 +137,7 @@ Replace `xxxx` with your card's serial number exactly as it appears in the card 
 | `show_live` | `true` | Live header while a car is connected/charging: status, power, kWh and duration of the current session |
 | `show_recent` | `true` | Table of the last charges (start, duration, kWh, Ø kW, card, cost, solar share) |
 | `recent_count` | `10` | Number of rows in the recent charges table (1–10) |
+| `show_billing` | `true` | "Abrechnung" section for tenant billing: amount and a *paid on* date per month and RFID card, open amount and a PDF report button (amounts need `price_per_kwh`) |
 | `recent_expanded` | `false` | Start with the recent charges unfolded. The table folds like the years: a summary row (count, duration, kWh, cost, solar) that expands to the single charges; the last state is remembered per browser |
 | `show_projection` | `true` | Year-end projection (linear extrapolation, shown from day 14 of the year) |
 | `show_solar` | `true` | Solar share in stats, chart, tooltips and tables – only if a PV sensor is set in the integration options |
@@ -145,6 +147,38 @@ The card shows year totals, average per month, number of charges, year-over-year
 **Solar share.** Once a PV sensor is configured (see [Options](#options)), the card adds a yellow overlay to the monthly bars and a "Sonne" column to the tables. The value is an **upper-bound estimate**: each charge is spread evenly over its duration and capped, hour by hour, at what the PV system produced. Household consumption and battery storage are not taken into account, so the real solar share can be lower. Periods without PV statistics show `–`.
 
 > If the card doesn't appear right after updating, reload the browser (Ctrl+F5) once. After a restart the history is loaded in the background; until it is there, the card shows a loading view with a countdown to the next data request (retried every 3 minutes).
+
+## Tenant billing (payment dates + yearly PDF)
+
+If you pass the charging costs on to tenants (one RFID card per tenant), the card shows a section **"Abrechnung <year>"** below the year/month table:
+
+- one row per month and card with kWh, amount (`price_per_kwh`) and a **"Bezahlt am"** date field,
+- ✓ = paid, ● = open (the running month is not counted as open),
+- the open amount of the year in the header, and a **"📄 PDF-Bericht"** button.
+
+Payment dates are stored in Home Assistant (`.storage/elli_charger.payments`), survive restarts and are exposed as the `payments` attribute of the Energy History sensor. Clearing a date removes it.
+
+The PDF (A4) contains an overview per tenant (kWh, amount, paid, open) and one table per tenant with month, kWh, amount and payment date. It is saved to `/config/elli_charger_reports/` – **not** under `www` – and served only to logged-in users via `/api/elli_charger/report/<file>`, because it contains names and amounts.
+
+Both features are also available as services:
+
+```yaml
+action: elli_charger.set_payment
+data:
+  month: "2026-09"
+  card: "RFID 04A1B2C3"
+  paid_on: "2026-10-05"   # empty = remove
+```
+
+```yaml
+action: elli_charger.create_billing_report
+data:
+  year: 2026              # optional, defaults to the current year
+  price_per_kwh: 0.38
+  card_names:
+    "RFID 04A1B2C3": Tenant ground floor
+response_variable: report   # report.url, report.total, report.open
+```
 
 ## Monthly report (PDF)
 

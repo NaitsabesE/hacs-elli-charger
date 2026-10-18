@@ -61,7 +61,7 @@ HISTORY_RETRY_SECONDS = 180
 HISTORY_MAX_QUICK_RETRIES = 5
 # The dashboard card ships with the integration and is served from here.
 HISTORY_CARD_URL = "/elli_charger/elli-history-card.js"
-HISTORY_CARD_VERSION = "1.6.3"
+HISTORY_CARD_VERSION = "1.6.4"
 
 # --- Automatic login callback (Windows protocol-handler helper) ---
 # Elli only accepts its own mobile-app redirect URI, which a desktop browser
